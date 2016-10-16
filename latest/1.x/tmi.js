@@ -1,8 +1,18 @@
 (function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
 "use strict";
 
+// Provide support for < Chrome 41 mainly due to CLR Browser..
+String.prototype.includes || (String.prototype.includes = function () {
+    return -1 !== String.prototype.indexOf.apply(this, arguments);
+}), String.prototype.startsWith || (String.prototype.startsWith = function (a, b) {
+    return b = b || 0, this.indexOf(a, b) === b;
+}), Object.setPrototypeOf || (Object.setPrototypeOf = function (obj, proto) {
+    obj.__proto__ = proto;
+    return obj;
+});
+
 module.exports = {
-	client: require("./lib/client")
+    client: require("./lib/client")
 };
 
 },{"./lib/client":3}],2:[function(require,module,exports){
@@ -26,21 +36,44 @@ var api = function api(options, callback) {
             callback(err, res, body);
         });
     }
-    // Inside a web application, use jsonp..
-    else {
-            // Callbacks must match the regex [a-zA-Z_$][\w$]*(\.[a-zA-Z_$][\w$]*)*
-            var callbackName = "jsonp_callback_" + Math.round(100000 * Math.random());
-            window[callbackName] = function (data) {
-                delete window[callbackName];
-                document.body.removeChild(script);
-                callback(null, null, data);
-            };
-
-            // Inject the script in the document..
-            var script = document.createElement("script");
-            script.src = "" + url + (url.indexOf("?") >= 0 ? "&" : "?") + "callback=" + callbackName;
-            document.body.appendChild(script);
+    // Inside an extension -> we cannot use jsonp!
+    else if (_.isExtension()) {
+            options = _.merge(options, { url: url, method: "GET", headers: {} });
+            // prepare request
+            var xhr = new XMLHttpRequest();
+            xhr.open(options.method, options.url, true);
+            for (var name in options.headers) {
+                xhr.setRequestHeader(name, options.headers[name]);
+            }
+            xhr.responseType = "json";
+            // set request handler
+            xhr.addEventListener("load", function (ev) {
+                if (xhr.readyState == 4) {
+                    if (xhr.status != 200) {
+                        callback(xhr.status, null, null);
+                    } else {
+                        callback(null, null, xhr.response);
+                    }
+                }
+            });
+            // submit
+            xhr.send();
         }
+        // Inside a web application, use jsonp..
+        else {
+                // Callbacks must match the regex [a-zA-Z_$][\w$]*(\.[a-zA-Z_$][\w$]*)*
+                var callbackName = "jsonp_callback_" + Math.round(100000 * Math.random());
+                window[callbackName] = function (data) {
+                    delete window[callbackName];
+                    document.body.removeChild(script);
+                    callback(null, null, data);
+                };
+
+                // Inject the script in the document..
+                var script = document.createElement("script");
+                script.src = "" + url + (url.indexOf("?") >= 0 ? "&" : "?") + "callback=" + callbackName;
+                document.body.appendChild(script);
+            }
 };
 
 module.exports = api;
@@ -70,6 +103,8 @@ var client = function client(opts) {
     this.opts.connection = this.opts.connection || {};
     this.opts.identity = this.opts.identity || {};
     this.opts.options = this.opts.options || {};
+
+    this.clientId = _.get(this.opts.options.clientId, null);
 
     this.maxReconnectAttempts = _.get(this.opts.connection.maxReconnectAttempts, Infinity);
     this.maxReconnectInterval = _.get(this.opts.connection.maxReconnectInterval, 30000);
@@ -128,16 +163,6 @@ client.prototype.api = api;
 for (var methodName in commands) {
     client.prototype[methodName] = commands[methodName];
 }
-
-// Provide support for < Chrome 41 mainly due to CLR Browser..
-String.prototype.includes || (String.prototype.includes = function () {
-    return -1 !== String.prototype.indexOf.apply(this, arguments);
-}), String.prototype.startsWith || (String.prototype.startsWith = function (a, b) {
-    return b = b || 0, this.indexOf(a, b) === b;
-}), Object.setPrototypeOf || (Object.setPrototypeOf = function (obj, proto) {
-    obj.__proto__ = proto;
-    return obj;
-});
 
 // Handle parsed chat server message..
 client.prototype.handleMessage = function handleMessage(message) {
@@ -407,7 +432,7 @@ client.prototype.handleMessage = function handleMessage(message) {
                             case "hosts_remaining":
                                 this.log.info("[" + channel + "] " + msg);
                                 var remainingHost = !isNaN(msg.charAt(0)) ? msg.charAt(0) : 0;
-                                this.emits(["notice", "_promiseHost"], [[channel, msgid, msg], [null, ~ ~remainingHost]]);
+                                this.emits(["notice", "_promiseHost"], [[channel, msgid, msg], [null, ~~remainingHost]]);
                                 break;
 
                             // Host command failed..
@@ -541,7 +566,9 @@ client.prototype.handleMessage = function handleMessage(message) {
                             // Send the following msg-ids to the notice event listener..
                             case "cmds_available":
                             case "host_target_went_offline":
+                            case "msg_censored_broadcaster":
                             case "msg_duplicate":
+                            case "msg_emoteonly":
                             case "msg_verified_email":
                             case "msg_ratelimit":
                             case "msg_subsonly":
@@ -590,7 +617,7 @@ client.prototype.handleMessage = function handleMessage(message) {
                     case "USERNOTICE":
                         if (msgid === "resub") {
                             var username = message.tags["display-name"] || message.tags["login"];
-                            var months = _.get(~ ~message.tags["msg-param-months"], null);
+                            var months = _.get(~~message.tags["msg-param-months"], null);
 
                             this.emits(["resub", "subanniversary"], [[channel, username, months, msg], [channel, username, months, msg]]);
                         }
@@ -601,11 +628,11 @@ client.prototype.handleMessage = function handleMessage(message) {
                         // Stopped hosting..
                         if (msg.split(" ")[0] === "-") {
                             this.log.info("[" + channel + "] Exited host mode.");
-                            this.emits(["unhost", "_promiseUnhost"], [[channel, ~ ~msg.split(" ")[1] || 0], [null]]);
+                            this.emits(["unhost", "_promiseUnhost"], [[channel, ~~msg.split(" ")[1] || 0], [null]]);
                         }
                         // Now hosting..
                         else {
-                                var viewers = ~ ~msg.split(" ")[1] || 0;
+                                var viewers = ~~msg.split(" ")[1] || 0;
 
                                 this.log.info("[" + channel + "] Now hosting " + msg.split(" ")[0] + " for " + viewers + " viewer(s).");
                                 this.emit("hosting", channel, msg.split(" ")[0], viewers);
@@ -633,7 +660,7 @@ client.prototype.handleMessage = function handleMessage(message) {
                                 this.emit("ban", channel, msg, reason);
                             } else {
                                 this.log.info("[" + channel + "] " + msg + " has been timed out for " + duration + " seconds. Reason: " + (reason || "n/a"));
-                                this.emit("timeout", channel, msg, reason, ~ ~duration);
+                                this.emit("timeout", channel, msg, reason, ~~duration);
                             }
                         }
                         // Chat was cleared by a moderator..
@@ -719,7 +746,7 @@ client.prototype.handleMessage = function handleMessage(message) {
                                 this.emits(["slow", "slowmode", "_promiseSlowoff"], [[channel, false, 0], [channel, false, 0], [null]]);
                             } else {
                                 this.log.info("[" + channel + "] This room is now in slow mode.");
-                                this.emits(["slow", "slowmode", "_promiseSlow"], [[channel, true, ~ ~message.tags.slow], [channel, true, ~ ~message.tags.slow], [null]]);
+                                this.emits(["slow", "slowmode", "_promiseSlow"], [[channel, true, ~~message.tags.slow], [channel, true, ~~message.tags.slow], [null]]);
                             }
                         }
                         break;
@@ -840,8 +867,8 @@ client.prototype.handleMessage = function handleMessage(message) {
                                     if (msg.includes("subscribed to")) {
                                         // Ignore this feature.
                                     } else if (msg.includes("just subscribed")) {
-                                            this.emit("subscription", channel, msg.split(" ")[0]);
-                                        }
+                                        this.emit("subscription", channel, msg.split(" ")[0], { prime: msg.includes("Twitch Prime!") });
+                                    }
                                 }
 
                                 // Message from JTV..
@@ -912,7 +939,7 @@ client.prototype.connect = function connect() {
         _this2._openConnection();
         _this2.once("_promiseConnect", function (err) {
             if (!err) {
-                resolve([_this2.server, ~ ~_this2.port]);
+                resolve([_this2.server, ~~_this2.port]);
             } else {
                 reject(err);
             }
@@ -936,7 +963,7 @@ client.prototype._onOpen = function _onOpen() {
     if (!_.isNull(this.ws) && this.ws.readyState === 1) {
         // Emitting "connecting" event..
         this.log.info("Connecting to " + this.server + " on port " + this.port + "..");
-        this.emit("connecting", this.server, ~ ~this.port);
+        this.emit("connecting", this.server, ~~this.port);
 
         this.username = _.get(this.opts.identity.username, _.justinfan());
         this.password = _.password(_.get(this.opts.identity.password, "SCHMOOPIIE"));
@@ -1148,14 +1175,17 @@ client.prototype._updateEmoteset = function _updateEmoteset(sets) {
     var _this8 = this;
 
     this.emotes = sets;
-    this.emit("emotesets", sets);
 
     this.api({
         url: "/chat/emoticon_images?emotesets=" + sets,
-        headers: { "Authorization": "OAuth " + _.password(_.get(this.opts.identity.password, "")).replace("oauth:", "") }
+        headers: {
+            "Authorization": "OAuth " + _.password(_.get(this.opts.identity.password, "")).replace("oauth:", ""),
+            "Client-ID": this.clientId
+        }
     }, function (err, res, body) {
         if (!err) {
-            return _this8.emotesets = body["emoticon_sets"] || {};
+            _this8.emotesets = body["emoticon_sets"] || {};
+            return _this8.emit("emotesets", sets, _this8.emotesets);
         }
         setTimeout(function () {
             _this8._updateEmoteset(sets);
@@ -1207,7 +1237,7 @@ client.prototype.disconnect = function disconnect() {
             _this9.log.info("Disconnecting from server..");
             _this9.ws.close();
             _this9.once("_promiseDisconnect", function () {
-                resolve([_this9.server, ~ ~_this9.port]);
+                resolve([_this9.server, ~~_this9.port]);
             });
         } else {
             _this9.log.error("Cannot disconnect from server. Socket is not opened or connection is already closing.");
@@ -1444,7 +1474,7 @@ function slow(channel, seconds) {
         // Received _promiseSlow event, resolve or reject..
         _this4.once("_promiseSlow", function (err) {
             if (!err) {
-                resolve([channel, ~ ~seconds]);
+                resolve([channel, ~~seconds]);
             } else {
                 reject(err);
             }
@@ -1556,7 +1586,7 @@ module.exports = {
             // Received _promiseCommercial event, resolve or reject..
             _this9.once("_promiseCommercial", function (err) {
                 if (!err) {
-                    resolve([channel, ~ ~seconds]);
+                    resolve([channel, ~~seconds]);
                 } else {
                     reject(err);
                 }
@@ -1614,7 +1644,7 @@ module.exports = {
             // Received _promiseHost event, resolve or reject..
             _this12.once("_promiseHost", function (err, remaining) {
                 if (!err) {
-                    resolve([channel, target, ~ ~remaining]);
+                    resolve([channel, target, ~~remaining]);
                 } else {
                     reject(err);
                 }
@@ -1837,7 +1867,7 @@ module.exports = {
             // Received _promiseTimeout event, resolve or reject..
             _this19.once("_promiseTimeout", function (err) {
                 if (!err) {
-                    resolve([channel, username, ~ ~seconds, reason]);
+                    resolve([channel, username, ~~seconds, reason]);
                 } else {
                     reject(err);
                 }
@@ -2411,7 +2441,7 @@ module.exports = {
     // Parse regex emotes..
     emoteRegex: function emoteRegex(msg, code, id, obj) {
         var space = /\S+/g;
-        var regex = new RegExp(_.unescapeHtml(code));
+        var regex = new RegExp("(\\b|^|\s)" + _.unescapeHtml(code) + "(\\b|$|\s)");
         var match;
 
         // Check if emote code matches using RegExp and push it to the object..
@@ -2646,7 +2676,7 @@ var self = module.exports = {
 
 	// Value is a boolean..
 	isBoolean: function isBoolean(obj) {
-		return obj === true || obj === false || toString.call(obj) === "[object Boolean]";
+		return typeof obj === "boolean";
 	},
 
 	// Value is a finite number..
@@ -2746,7 +2776,7 @@ var self = module.exports = {
 		var parts = str.split(" ");
 		for (var i = 0; i < parts.length; i++) {
 			if (self.isInteger(parts[i])) {
-				return ~ ~parts[i];
+				return ~~parts[i];
 			}
 		}
 		return 0;
@@ -2766,13 +2796,27 @@ var self = module.exports = {
 	// Inherit the prototype methods from one constructor into another..
 	inherits: function inherits(ctor, superCtor) {
 		ctor.super_ = superCtor;
-		Object.setPrototypeOf(ctor.prototype, superCtor.prototype);
+		var TempCtor = function TempCtor() {};
+		TempCtor.prototype = superCtor.prototype;
+		ctor.prototype = new TempCtor();
+		ctor.prototype.constructor = ctor;
 	},
 
 	// Return whether inside a Node application or not..
 	isNode: function isNode() {
 		try {
 			if (module.exports = "object" === (typeof process === "undefined" ? "undefined" : _typeof(process)) && Object.prototype.toString.call(process) === "[object process]") {
+				return true;
+			}
+			return false;
+		} catch (e) {
+			return false;
+		}
+	},
+
+	isExtension: function isExtension() {
+		try {
+			if (window.chrome && chrome.runtime && chrome.runtime.id) {
 				return true;
 			}
 			return false;
@@ -2844,14 +2888,55 @@ var self = module.exports = {
 
 },{}],11:[function(require,module,exports){
 // shim for using process in browser
-
 var process = module.exports = {};
+
+// cached from whatever global is present so that test runners that stub it
+// don't break things.  But we need to wrap it in a try catch in case it is
+// wrapped in strict mode code which doesn't define any globals.  It's inside a
+// function because try/catches deoptimize in certain engines.
+
+var cachedSetTimeout;
+var cachedClearTimeout;
+
+(function () {
+    try {
+        cachedSetTimeout = setTimeout;
+    } catch (e) {
+        cachedSetTimeout = function () {
+            throw new Error('setTimeout is not defined');
+        }
+    }
+    try {
+        cachedClearTimeout = clearTimeout;
+    } catch (e) {
+        cachedClearTimeout = function () {
+            throw new Error('clearTimeout is not defined');
+        }
+    }
+} ())
+function runTimeout(fun) {
+    if (cachedSetTimeout === setTimeout) {
+        return setTimeout(fun, 0);
+    } else {
+        return cachedSetTimeout.call(null, fun, 0);
+    }
+}
+function runClearTimeout(marker) {
+    if (cachedClearTimeout === clearTimeout) {
+        clearTimeout(marker);
+    } else {
+        cachedClearTimeout.call(null, marker);
+    }
+}
 var queue = [];
 var draining = false;
 var currentQueue;
 var queueIndex = -1;
 
 function cleanUpNextTick() {
+    if (!draining || !currentQueue) {
+        return;
+    }
     draining = false;
     if (currentQueue.length) {
         queue = currentQueue.concat(queue);
@@ -2867,7 +2952,7 @@ function drainQueue() {
     if (draining) {
         return;
     }
-    var timeout = setTimeout(cleanUpNextTick);
+    var timeout = runTimeout(cleanUpNextTick);
     draining = true;
 
     var len = queue.length;
@@ -2884,7 +2969,7 @@ function drainQueue() {
     }
     currentQueue = null;
     draining = false;
-    clearTimeout(timeout);
+    runClearTimeout(timeout);
 }
 
 process.nextTick = function (fun) {
@@ -2896,7 +2981,7 @@ process.nextTick = function (fun) {
     }
     queue.push(new Item(fun, args));
     if (queue.length === 1 && !draining) {
-        setTimeout(drainQueue, 0);
+        runTimeout(drainQueue);
     }
 };
 
