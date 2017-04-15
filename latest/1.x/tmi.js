@@ -12,7 +12,8 @@ String.prototype.includes || (String.prototype.includes = function () {
 });
 
 module.exports = {
-    client: require("./lib/client")
+    client: require("./lib/client"),
+    Client: require("./lib/client")
 };
 
 },{"./lib/client":3}],2:[function(require,module,exports){
@@ -23,18 +24,23 @@ var _ = require("./utils");
 
 var api = function api(options, callback) {
     // Set the url to options.uri or options.url..
-    var url = _.get(options.url, null) === null ? _.get(options.uri, null) : _.get(options.url, null);
+    var url = options.url || options.uri || '';
 
     // Make sure it is a valid url..
-    if (!_.isURL(url)) {
-        url = url.charAt(0) === "/" ? "https://api.twitch.tv/kraken" + url : "https://api.twitch.tv/kraken/" + url;
+    if (_.isString(url) && !_.isURL(url)) {
+        url = "https://api.twitch.tv/kraken" + (url.charAt(0) === "/" ? "" : "/") + url;
+        // Force the url in the options to reflect this change..
+        options.url = url;
+    }
+
+    // Callback may be passed through the options..
+    if (_.isUndefined(callback) && _.isFunction(options.callback)) {
+        callback = options.callback;
     }
 
     // We are inside a Node application, so we can use the request module..
     if (_.isNode()) {
-        request(_.merge(options, { url: url, method: "GET", json: true }), function (err, res, body) {
-            callback(err, res, body);
-        });
+        request(_.defaults(options, { url: url, method: "GET", json: true, callback: callback }));
     }
     // Inside an extension -> we cannot use jsonp!
     else if (_.isExtension()) {
@@ -99,7 +105,7 @@ var client = function client(opts) {
     this.setMaxListeners(0);
 
     this.opts = _.get(opts, {});
-    this.opts.channels = this.opts.channels || [];
+    this.opts.channels = this.opts.channels || this.opts.channel || [];
     this.opts.connection = this.opts.connection || {};
     this.opts.identity = this.opts.identity || {};
     this.opts.options = this.opts.options || {};
@@ -146,6 +152,16 @@ var client = function client(opts) {
     try {
         logger.setLevel(level);
     } catch (e) {};
+
+    // If a string is passed here, format it..
+    if (_.isString(this.opts.channels)) {
+        // Comma-delimited channels..
+        if (this.opts.channels.indexOf(",") > -1) {
+            this.opts.channels = this.opts.channels.split(",");
+        } else {
+            this.opts.channels = [this.opts.channels];
+        }
+    }
 
     // Format the channel names..
     this.opts.channels.forEach(function (part, index, theArray) {
@@ -236,7 +252,7 @@ client.prototype.handleMessage = function handleMessage(message) {
                     // Connected to server..
                     case "372":
                         this.log.info("Connected to server.");
-                        this.userstate["#jtv"] = {};
+                        this.userstate["#tmijs"] = {};
                         this.emits(["connected", "_promiseConnect"], [[this.server, this.port], [null]]);
                         this.reconnections = 0;
                         this.reconnectTimer = this.reconnectInterval;
@@ -307,6 +323,12 @@ client.prototype.handleMessage = function handleMessage(message) {
                             // Do not handle slow_on/off here, listen to the ROOMSTATE notice instead as it returns the delay.
                             case "slow_on":
                             case "slow_off":
+                                break;
+
+                            // Do not handle followers_on/off here, listen to the ROOMSTATE notice instead as it returns the delay.
+                            case "followers_on_zero":
+                            case "followers_on":
+                            case "followers_off":
                                 break;
 
                             // This room is now in r9k mode.
@@ -550,7 +572,7 @@ client.prototype.handleMessage = function handleMessage(message) {
                             case "no_permission":
                             case "msg_banned":
                                 this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseBan", "_promiseClear", "_promiseUnban", "_promiseTimeout", "_promiseMod", "_promiseUnmod", "_promiseCommercial", "_promiseHost", "_promiseUnhost", "_promiseR9kbeta", "_promiseR9kbetaoff", "_promiseSlow", "_promiseSlowoff", "_promiseSubscribers", "_promiseSubscribersoff", "_promiseEmoteonly", "_promiseEmoteonlyoff"], [[channel, msgid, msg], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid]]);
+                                this.emits(["notice", "_promiseBan", "_promiseClear", "_promiseUnban", "_promiseTimeout", "_promiseMod", "_promiseUnmod", "_promiseCommercial", "_promiseHost", "_promiseUnhost", "_promiseR9kbeta", "_promiseR9kbetaoff", "_promiseSlow", "_promiseSlowoff", "_promiseFollowers", "_promiseFollowersoff", "_promiseSubscribers", "_promiseSubscribersoff", "_promiseEmoteonly", "_promiseEmoteonlyoff"], [[channel, msgid, msg], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid]]);
                                 break;
 
                             // Unrecognized command..
@@ -618,8 +640,15 @@ client.prototype.handleMessage = function handleMessage(message) {
                         if (msgid === "resub") {
                             var username = message.tags["display-name"] || message.tags["login"];
                             var months = _.get(~~message.tags["msg-param-months"], null);
+                            var prime = message.tags["system-msg"].includes('Twitch\\sPrime');
+                            var userstate = null;
 
-                            this.emits(["resub", "subanniversary"], [[channel, username, months, msg], [channel, username, months, msg]]);
+                            if (msg) {
+                                userstate = message.tags;
+                                userstate['message-type'] = 'resub';
+                            }
+
+                            this.emits(["resub", "subanniversary"], [[channel, username, months, msg, userstate, { prime: prime }], [channel, username, months, msg, userstate, { prime: prime }]]);
                         }
                         break;
 
@@ -749,6 +778,24 @@ client.prototype.handleMessage = function handleMessage(message) {
                                 this.emits(["slow", "slowmode", "_promiseSlow"], [[channel, true, ~~message.tags.slow], [channel, true, ~~message.tags.slow], [null]]);
                             }
                         }
+
+                        // Handle followers only mode here instead of the followers_on/off notice..
+                        // This room is now in follower-only mode.
+                        // This room is now in <duration> followers-only mode.
+                        // This room is no longer in followers-only mode.
+                        // duration is in minutes (string)
+                        // -1 when /followersoff (string)
+                        // false when /followers with no duration (boolean)
+                        if (message.tags.hasOwnProperty("followers-only") && !message.tags.hasOwnProperty("subs-only")) {
+                            if (message.tags["followers-only"] === "-1") {
+                                this.log.info("[" + channel + "] This room is no longer in followers-only mode.");
+                                this.emits(["followersonly", "followersmode", "_promiseFollowersoff"], [[channel, false, 0], [channel, false, 0], [null]]);
+                            } else {
+                                var minutes = ~~message.tags["followers-only"];
+                                this.log.info("[" + channel + "] This room is now in follower-only mode.");
+                                this.emits(["followersonly", "followersmode", "_promiseFollowers"], [[channel, true, minutes], [channel, true, minutes], [null]]);
+                            }
+                        }
                         break;
 
                     default:
@@ -874,15 +921,15 @@ client.prototype.handleMessage = function handleMessage(message) {
                                 // Message from JTV..
                                 else if (message.tags.username === "jtv") {
                                         // Someone is hosting the channel and the message contains how many viewers..
-                                        if (msg.includes("is now hosting you for")) {
+                                        if (msg.includes("hosting you for")) {
                                             var count = _.extractNumber(msg);
 
-                                            this.emit("hosted", channel, _.username(msg.split(" ")[0]), count);
+                                            this.emit("hosted", channel, _.username(msg.split(" ")[0]), count, msg.includes("auto"));
                                         }
 
                                         // Some is hosting the channel, but no viewer(s) count provided in the message..
-                                        else if (msg.includes("is now hosting you")) {
-                                                this.emit("hosted", channel, _.username(msg.split(" ")[0]), 0);
+                                        else if (msg.includes("hosting you")) {
+                                                this.emit("hosted", channel, _.username(msg.split(" ")[0]), 0, msg.includes("auto"));
                                             }
                                     } else {
                                         // Message is an action (/me <message>)..
@@ -1129,7 +1176,7 @@ client.prototype._sendMessage = function _sendMessage(delay, channel, message, f
                 message = msg[0];
 
                 setTimeout(function () {
-                    _this7._sendMessage(delay, channel, msg[1]);
+                    _this7._sendMessage(delay, channel, msg[1], function () {});
                 }, 350);
             }
 
@@ -1405,16 +1452,55 @@ if (typeof window !== "undefined") {
 
 var _ = require("./utils");
 
+// Enable followers-only mode on a channel..
+function followersonly(channel, minutes) {
+    var _this = this;
+
+    channel = _.channel(channel);
+    minutes = _.get(minutes, 30);
+
+    // Send the command to the server and race the Promise against a delay..
+    return this._sendCommand(this._getPromiseDelay(), channel, "/followers " + minutes, function (resolve, reject) {
+        // Received _promiseFollowers event, resolve or reject..
+        _this.once("_promiseFollowers", function (err) {
+            if (!err) {
+                resolve([channel, ~~minutes]);
+            } else {
+                reject(err);
+            }
+        });
+    });
+}
+
+// Disable followers-only mode on a channel..
+function followersonlyoff(channel) {
+    var _this2 = this;
+
+    channel = _.channel(channel);
+
+    // Send the command to the server and race the Promise against a delay..
+    return this._sendCommand(this._getPromiseDelay(), channel, "/followersoff", function (resolve, reject) {
+        // Received _promiseFollowersoff event, resolve or reject..
+        _this2.once("_promiseFollowersoff", function (err) {
+            if (!err) {
+                resolve([channel]);
+            } else {
+                reject(err);
+            }
+        });
+    });
+}
+
 // Leave a channel..
 function part(channel) {
-    var _this = this;
+    var _this3 = this;
 
     channel = _.channel(channel);
 
     // Send the command to the server and race the Promise against a delay..
     return this._sendCommand(this._getPromiseDelay(), null, "PART " + channel, function (resolve, reject) {
         // Received _promisePart event, resolve or reject..
-        _this.once("_promisePart", function (err) {
+        _this3.once("_promisePart", function (err) {
             if (!err) {
                 resolve([channel]);
             } else {
@@ -1426,14 +1512,14 @@ function part(channel) {
 
 // Enable R9KBeta mode on a channel..
 function r9kbeta(channel) {
-    var _this2 = this;
+    var _this4 = this;
 
     channel = _.channel(channel);
 
     // Send the command to the server and race the Promise against a delay..
     return this._sendCommand(this._getPromiseDelay(), channel, "/r9kbeta", function (resolve, reject) {
         // Received _promiseR9kbeta event, resolve or reject..
-        _this2.once("_promiseR9kbeta", function (err) {
+        _this4.once("_promiseR9kbeta", function (err) {
             if (!err) {
                 resolve([channel]);
             } else {
@@ -1445,14 +1531,14 @@ function r9kbeta(channel) {
 
 // Disable R9KBeta mode on a channel..
 function r9kbetaoff(channel) {
-    var _this3 = this;
+    var _this5 = this;
 
     channel = _.channel(channel);
 
     // Send the command to the server and race the Promise against a delay..
     return this._sendCommand(this._getPromiseDelay(), channel, "/r9kbetaoff", function (resolve, reject) {
         // Received _promiseR9kbetaoff event, resolve or reject..
-        _this3.once("_promiseR9kbetaoff", function (err) {
+        _this5.once("_promiseR9kbetaoff", function (err) {
             if (!err) {
                 resolve([channel]);
             } else {
@@ -1464,7 +1550,7 @@ function r9kbetaoff(channel) {
 
 // Enable slow mode on a channel..
 function slow(channel, seconds) {
-    var _this4 = this;
+    var _this6 = this;
 
     channel = _.channel(channel);
     seconds = _.get(seconds, 300);
@@ -1472,7 +1558,7 @@ function slow(channel, seconds) {
     // Send the command to the server and race the Promise against a delay..
     return this._sendCommand(this._getPromiseDelay(), channel, "/slow " + seconds, function (resolve, reject) {
         // Received _promiseSlow event, resolve or reject..
-        _this4.once("_promiseSlow", function (err) {
+        _this6.once("_promiseSlow", function (err) {
             if (!err) {
                 resolve([channel, ~~seconds]);
             } else {
@@ -1484,14 +1570,14 @@ function slow(channel, seconds) {
 
 // Disable slow mode on a channel..
 function slowoff(channel) {
-    var _this5 = this;
+    var _this7 = this;
 
     channel = _.channel(channel);
 
     // Send the command to the server and race the Promise against a delay..
     return this._sendCommand(this._getPromiseDelay(), channel, "/slowoff", function (resolve, reject) {
         // Received _promiseSlowoff event, resolve or reject..
-        _this5.once("_promiseSlowoff", function (err) {
+        _this7.once("_promiseSlowoff", function (err) {
             if (!err) {
                 resolve([channel]);
             } else {
@@ -1505,7 +1591,7 @@ module.exports = {
     // Send action message (/me <message>) on a channel..
     action: function action(channel, message) {
         channel = _.channel(channel);
-        message = "\u0001ACTION " + message + "\u0001";
+        message = "\x01ACTION " + message + "\x01";
 
         // Send the command to the server and race the Promise against a delay..
         return this._sendMessage(this._getPromiseDelay(), channel, message, function (resolve, reject) {
@@ -1517,7 +1603,7 @@ module.exports = {
 
     // Ban username on channel..
     ban: function ban(channel, username, reason) {
-        var _this6 = this;
+        var _this8 = this;
 
         channel = _.channel(channel);
         username = _.username(username);
@@ -1526,7 +1612,7 @@ module.exports = {
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/ban " + username + " " + reason, function (resolve, reject) {
             // Received _promiseBan event, resolve or reject..
-            _this6.once("_promiseBan", function (err) {
+            _this8.once("_promiseBan", function (err) {
                 if (!err) {
                     resolve([channel, username, reason]);
                 } else {
@@ -1538,14 +1624,14 @@ module.exports = {
 
     // Clear all messages on a channel..
     clear: function clear(channel) {
-        var _this7 = this;
+        var _this9 = this;
 
         channel = _.channel(channel);
 
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/clear", function (resolve, reject) {
             // Received _promiseClear event, resolve or reject..
-            _this7.once("_promiseClear", function (err) {
+            _this9.once("_promiseClear", function (err) {
                 if (!err) {
                     resolve([channel]);
                 } else {
@@ -1557,14 +1643,14 @@ module.exports = {
 
     // Change the color of your username..
     color: function color(channel, newColor) {
-        var _this8 = this;
+        var _this10 = this;
 
         newColor = _.get(newColor, channel);
 
         // Send the command to the server and race the Promise against a delay..
-        return this._sendCommand(this._getPromiseDelay(), "#jtv", "/color " + newColor, function (resolve, reject) {
+        return this._sendCommand(this._getPromiseDelay(), "#tmijs", "/color " + newColor, function (resolve, reject) {
             // Received _promiseColor event, resolve or reject..
-            _this8.once("_promiseColor", function (err) {
+            _this10.once("_promiseColor", function (err) {
                 if (!err) {
                     resolve([newColor]);
                 } else {
@@ -1576,7 +1662,7 @@ module.exports = {
 
     // Run commercial on a channel for X seconds..
     commercial: function commercial(channel, seconds) {
-        var _this9 = this;
+        var _this11 = this;
 
         channel = _.channel(channel);
         seconds = _.get(seconds, 30);
@@ -1584,7 +1670,7 @@ module.exports = {
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/commercial " + seconds, function (resolve, reject) {
             // Received _promiseCommercial event, resolve or reject..
-            _this9.once("_promiseCommercial", function (err) {
+            _this11.once("_promiseCommercial", function (err) {
                 if (!err) {
                     resolve([channel, ~~seconds]);
                 } else {
@@ -1596,14 +1682,14 @@ module.exports = {
 
     // Enable emote-only mode on a channel..
     emoteonly: function emoteonly(channel) {
-        var _this10 = this;
+        var _this12 = this;
 
         channel = _.channel(channel);
 
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/emoteonly", function (resolve, reject) {
             // Received _promiseEmoteonly event, resolve or reject..
-            _this10.once("_promiseEmoteonly", function (err) {
+            _this12.once("_promiseEmoteonly", function (err) {
                 if (!err) {
                     resolve([channel]);
                 } else {
@@ -1615,14 +1701,14 @@ module.exports = {
 
     // Disable emote-only mode on a channel..
     emoteonlyoff: function emoteonlyoff(channel) {
-        var _this11 = this;
+        var _this13 = this;
 
         channel = _.channel(channel);
 
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/emoteonlyoff", function (resolve, reject) {
             // Received _promiseEmoteonlyoff event, resolve or reject..
-            _this11.once("_promiseEmoteonlyoff", function (err) {
+            _this13.once("_promiseEmoteonlyoff", function (err) {
                 if (!err) {
                     resolve([channel]);
                 } else {
@@ -1632,9 +1718,21 @@ module.exports = {
         });
     },
 
+    // Enable followers-only mode on a channel..
+    followersonly: followersonly,
+
+    // Alias for followersonly()..
+    followersmode: followersonly,
+
+    // Disable followers-only mode on a channel..
+    followersonlyoff: followersonlyoff,
+
+    // Alias for followersonlyoff()..
+    followersmodeoff: followersonlyoff,
+
     // Host a channel..
     host: function host(channel, target) {
-        var _this12 = this;
+        var _this14 = this;
 
         channel = _.channel(channel);
         target = _.username(target);
@@ -1642,7 +1740,7 @@ module.exports = {
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(2000, channel, "/host " + target, function (resolve, reject) {
             // Received _promiseHost event, resolve or reject..
-            _this12.once("_promiseHost", function (err, remaining) {
+            _this14.once("_promiseHost", function (err, remaining) {
                 if (!err) {
                     resolve([channel, target, ~~remaining]);
                 } else {
@@ -1654,14 +1752,14 @@ module.exports = {
 
     // Join a channel..
     join: function join(channel) {
-        var _this13 = this;
+        var _this15 = this;
 
         channel = _.channel(channel);
 
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), null, "JOIN " + channel, function (resolve, reject) {
             // Received _promiseJoin event, resolve or reject..
-            _this13.once("_promiseJoin", function (err) {
+            _this15.once("_promiseJoin", function (err) {
                 if (!err) {
                     resolve([channel]);
                 } else {
@@ -1673,7 +1771,7 @@ module.exports = {
 
     // Mod username on channel..
     mod: function mod(channel, username) {
-        var _this14 = this;
+        var _this16 = this;
 
         channel = _.channel(channel);
         username = _.username(username);
@@ -1681,7 +1779,7 @@ module.exports = {
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/mod " + username, function (resolve, reject) {
             // Received _promiseMod event, resolve or reject..
-            _this14.once("_promiseMod", function (err) {
+            _this16.once("_promiseMod", function (err) {
                 if (!err) {
                     resolve([channel, username]);
                 } else {
@@ -1693,22 +1791,22 @@ module.exports = {
 
     // Get list of mods on a channel..
     mods: function mods(channel) {
-        var _this15 = this;
+        var _this17 = this;
 
         channel = _.channel(channel);
 
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/mods", function (resolve, reject) {
             // Received _promiseMods event, resolve or reject..
-            _this15.once("_promiseMods", function (err, mods) {
+            _this17.once("_promiseMods", function (err, mods) {
                 if (!err) {
                     // Update the internal list of moderators..
                     mods.forEach(function (username) {
-                        if (!_this15.moderators[channel]) {
-                            _this15.moderators[channel] = [];
+                        if (!_this17.moderators[channel]) {
+                            _this17.moderators[channel] = [];
                         }
-                        if (_this15.moderators[channel].indexOf(username) < 0) {
-                            _this15.moderators[channel].push(username);
+                        if (_this17.moderators[channel].indexOf(username) < 0) {
+                            _this17.moderators[channel].push(username);
                         }
                     });
                     resolve(mods);
@@ -1727,25 +1825,25 @@ module.exports = {
 
     // Send a ping to the server..
     ping: function ping() {
-        var _this16 = this;
+        var _this18 = this;
 
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), null, "PING", function (resolve, reject) {
             // Update the internal ping timeout check interval..
-            _this16.latency = new Date();
-            _this16.pingTimeout = setTimeout(function () {
-                if (_this16.ws !== null) {
-                    _this16.wasCloseCalled = false;
-                    _this16.log.error("Ping timeout.");
-                    _this16.ws.close();
+            _this18.latency = new Date();
+            _this18.pingTimeout = setTimeout(function () {
+                if (_this18.ws !== null) {
+                    _this18.wasCloseCalled = false;
+                    _this18.log.error("Ping timeout.");
+                    _this18.ws.close();
 
-                    clearInterval(_this16.pingLoop);
-                    clearTimeout(_this16.pingTimeout);
+                    clearInterval(_this18.pingLoop);
+                    clearTimeout(_this18.pingTimeout);
                 }
-            }, _.get(_this16.opts.connection.timeout, 9999));
+            }, _.get(_this18.opts.connection.timeout, 9999));
 
             // Received _promisePing event, resolve or reject..
-            _this16.once("_promisePing", function (latency) {
+            _this18.once("_promisePing", function (latency) {
                 resolve([parseFloat(latency)]);
             });
         });
@@ -1811,14 +1909,14 @@ module.exports = {
 
     // Enable subscribers mode on a channel..
     subscribers: function subscribers(channel) {
-        var _this17 = this;
+        var _this19 = this;
 
         channel = _.channel(channel);
 
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/subscribers", function (resolve, reject) {
             // Received _promiseSubscribers event, resolve or reject..
-            _this17.once("_promiseSubscribers", function (err) {
+            _this19.once("_promiseSubscribers", function (err) {
                 if (!err) {
                     resolve([channel]);
                 } else {
@@ -1830,14 +1928,14 @@ module.exports = {
 
     // Disable subscribers mode on a channel..
     subscribersoff: function subscribersoff(channel) {
-        var _this18 = this;
+        var _this20 = this;
 
         channel = _.channel(channel);
 
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/subscribersoff", function (resolve, reject) {
             // Received _promiseSubscribersoff event, resolve or reject..
-            _this18.once("_promiseSubscribersoff", function (err) {
+            _this20.once("_promiseSubscribersoff", function (err) {
                 if (!err) {
                     resolve([channel]);
                 } else {
@@ -1849,7 +1947,7 @@ module.exports = {
 
     // Timeout username on channel for X seconds..
     timeout: function timeout(channel, username, seconds, reason) {
-        var _this19 = this;
+        var _this21 = this;
 
         channel = _.channel(channel);
         username = _.username(username);
@@ -1865,7 +1963,7 @@ module.exports = {
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/timeout " + username + " " + seconds + " " + reason, function (resolve, reject) {
             // Received _promiseTimeout event, resolve or reject..
-            _this19.once("_promiseTimeout", function (err) {
+            _this21.once("_promiseTimeout", function (err) {
                 if (!err) {
                     resolve([channel, username, ~~seconds, reason]);
                 } else {
@@ -1877,7 +1975,7 @@ module.exports = {
 
     // Unban username on channel..
     unban: function unban(channel, username) {
-        var _this20 = this;
+        var _this22 = this;
 
         channel = _.channel(channel);
         username = _.username(username);
@@ -1885,7 +1983,7 @@ module.exports = {
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/unban " + username, function (resolve, reject) {
             // Received _promiseUnban event, resolve or reject..
-            _this20.once("_promiseUnban", function (err) {
+            _this22.once("_promiseUnban", function (err) {
                 if (!err) {
                     resolve([channel, username]);
                 } else {
@@ -1897,14 +1995,14 @@ module.exports = {
 
     // End the current hosting..
     unhost: function unhost(channel) {
-        var _this21 = this;
+        var _this23 = this;
 
         channel = _.channel(channel);
 
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(2000, channel, "/unhost", function (resolve, reject) {
             // Received _promiseUnhost event, resolve or reject..
-            _this21.once("_promiseUnhost", function (err) {
+            _this23.once("_promiseUnhost", function (err) {
                 if (!err) {
                     resolve([channel]);
                 } else {
@@ -1916,7 +2014,7 @@ module.exports = {
 
     // Unmod username on channel..
     unmod: function unmod(channel, username) {
-        var _this22 = this;
+        var _this24 = this;
 
         channel = _.channel(channel);
         username = _.username(username);
@@ -1924,7 +2022,7 @@ module.exports = {
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/unmod " + username, function (resolve, reject) {
             // Received _promiseUnmod event, resolve or reject..
-            _this22.once("_promiseUnmod", function (err) {
+            _this24.once("_promiseUnmod", function (err) {
                 if (!err) {
                     resolve([channel, username]);
                 } else {
@@ -1936,7 +2034,7 @@ module.exports = {
 
     // Send an whisper message to a user..
     whisper: function whisper(username, message) {
-        var _this23 = this;
+        var _this25 = this;
 
         username = _.username(username);
 
@@ -1946,17 +2044,17 @@ module.exports = {
         }
 
         // Send the command to the server and race the Promise against a delay..
-        return this._sendCommand(this._getPromiseDelay(), "#jtv", "/w " + username + " " + message, function (resolve, reject) {
+        return this._sendCommand(this._getPromiseDelay(), "#tmijs", "/w " + username + " " + message, function (resolve, reject) {
             var from = _.channel(username),
                 userstate = _.merge({
                 "message-type": "whisper",
                 "message-id": null,
                 "thread-id": null,
-                username: _this23.getUsername()
-            }, _this23.globaluserstate);
+                username: _this25.getUsername()
+            }, _this25.globaluserstate);
 
             // Emit for both, whisper and message..
-            _this23.emits(["whisper", "message"], [[from, userstate, message, true], [from, userstate, message, true]]);
+            _this25.emits(["whisper", "message"], [[from, userstate, message, true], [from, userstate, message, true]]);
 
             // At this time, there is no possible way to detect if a message has been sent has been eaten
             // by the server, so we can only resolve the Promise.
@@ -1968,7 +2066,7 @@ module.exports = {
 },{"./utils":9}],5:[function(require,module,exports){
 "use strict";
 
-var _typeof = typeof Symbol === "function" && typeof Symbol.iterator === "symbol" ? function (obj) { return typeof obj; } : function (obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol ? "symbol" : typeof obj; };
+var _typeof = typeof Symbol === "function" && typeof Symbol.iterator === "symbol" ? function (obj) { return typeof obj; } : function (obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; };
 
 /*
  * Copyright Joyent, Inc. and other Node contributors.
@@ -2666,12 +2764,12 @@ exports.queue = queue;
 (function (process){
 "use strict";
 
-var _typeof = typeof Symbol === "function" && typeof Symbol.iterator === "symbol" ? function (obj) { return typeof obj; } : function (obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol ? "symbol" : typeof obj; };
+var _typeof = typeof Symbol === "function" && typeof Symbol.iterator === "symbol" ? function (obj) { return typeof obj; } : function (obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; };
 
 var self = module.exports = {
 	// Return the second value if the first value is undefined..
 	get: function get(obj1, obj2) {
-		return typeof obj1 === "undefined" ? obj2 : obj1;
+		return self.isUndefined(obj1) ? obj2 : obj1;
 	},
 
 	// Value is a boolean..
@@ -2707,6 +2805,16 @@ var self = module.exports = {
 	// Value is null..
 	isNull: function isNull(obj) {
 		return obj === null;
+	},
+
+	// Value is undefined..
+	isUndefined: function isUndefined(obj) {
+		return typeof obj === "undefined";
+	},
+
+	// Value is a function..
+	isFunction: function isFunction(obj) {
+		return Object.prototype.toString.call(obj) === "[object Function]";
 	},
 
 	// Value is a regex..
@@ -2841,6 +2949,24 @@ var self = module.exports = {
 		return obj1;
 	},
 
+	// Merge two objects without replacing..
+	defaults: function defaults(obj1, obj2) {
+		for (var p in obj2) {
+			try {
+				if (obj2[p].constructor == Object) {
+					obj1[p] = self.defaults(obj1[p], obj2[p]);
+				} else if (self.isUndefined(obj1[p])) {
+					obj1[p] = obj2[p];
+				}
+			} catch (e) {
+				if (self.isUndefined(obj1[p])) {
+					obj1[p] = obj2[p];
+				}
+			}
+		}
+		return obj1;
+	},
+
 	// Split a line but don't cut a word in half..
 	splitLine: function splitLine(input, length) {
 		var lastSpace = input.substring(0, length).lastIndexOf(" ");
@@ -2898,35 +3024,83 @@ var process = module.exports = {};
 var cachedSetTimeout;
 var cachedClearTimeout;
 
+function defaultSetTimout() {
+    throw new Error('setTimeout has not been defined');
+}
+function defaultClearTimeout () {
+    throw new Error('clearTimeout has not been defined');
+}
 (function () {
     try {
-        cachedSetTimeout = setTimeout;
-    } catch (e) {
-        cachedSetTimeout = function () {
-            throw new Error('setTimeout is not defined');
+        if (typeof setTimeout === 'function') {
+            cachedSetTimeout = setTimeout;
+        } else {
+            cachedSetTimeout = defaultSetTimout;
         }
+    } catch (e) {
+        cachedSetTimeout = defaultSetTimout;
     }
     try {
-        cachedClearTimeout = clearTimeout;
-    } catch (e) {
-        cachedClearTimeout = function () {
-            throw new Error('clearTimeout is not defined');
+        if (typeof clearTimeout === 'function') {
+            cachedClearTimeout = clearTimeout;
+        } else {
+            cachedClearTimeout = defaultClearTimeout;
         }
+    } catch (e) {
+        cachedClearTimeout = defaultClearTimeout;
     }
 } ())
 function runTimeout(fun) {
     if (cachedSetTimeout === setTimeout) {
+        //normal enviroments in sane situations
         return setTimeout(fun, 0);
-    } else {
-        return cachedSetTimeout.call(null, fun, 0);
     }
+    // if setTimeout wasn't available but was latter defined
+    if ((cachedSetTimeout === defaultSetTimout || !cachedSetTimeout) && setTimeout) {
+        cachedSetTimeout = setTimeout;
+        return setTimeout(fun, 0);
+    }
+    try {
+        // when when somebody has screwed with setTimeout but no I.E. maddness
+        return cachedSetTimeout(fun, 0);
+    } catch(e){
+        try {
+            // When we are in I.E. but the script has been evaled so I.E. doesn't trust the global object when called normally
+            return cachedSetTimeout.call(null, fun, 0);
+        } catch(e){
+            // same as above but when it's a version of I.E. that must have the global object for 'this', hopfully our context correct otherwise it will throw a global error
+            return cachedSetTimeout.call(this, fun, 0);
+        }
+    }
+
+
 }
 function runClearTimeout(marker) {
     if (cachedClearTimeout === clearTimeout) {
-        clearTimeout(marker);
-    } else {
-        cachedClearTimeout.call(null, marker);
+        //normal enviroments in sane situations
+        return clearTimeout(marker);
     }
+    // if clearTimeout wasn't available but was latter defined
+    if ((cachedClearTimeout === defaultClearTimeout || !cachedClearTimeout) && clearTimeout) {
+        cachedClearTimeout = clearTimeout;
+        return clearTimeout(marker);
+    }
+    try {
+        // when when somebody has screwed with setTimeout but no I.E. maddness
+        return cachedClearTimeout(marker);
+    } catch (e){
+        try {
+            // When we are in I.E. but the script has been evaled so I.E. doesn't  trust the global object when called normally
+            return cachedClearTimeout.call(null, marker);
+        } catch (e){
+            // same as above but when it's a version of I.E. that must have the global object for 'this', hopfully our context correct otherwise it will throw a global error.
+            // Some versions of I.E. have different rules for clearTimeout vs setTimeout
+            return cachedClearTimeout.call(this, marker);
+        }
+    }
+
+
+
 }
 var queue = [];
 var draining = false;
