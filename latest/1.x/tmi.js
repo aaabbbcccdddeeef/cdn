@@ -24,23 +24,18 @@ var _ = require("./utils");
 
 var api = function api(options, callback) {
     // Set the url to options.uri or options.url..
-    var url = options.url || options.uri || '';
+    var url = _.get(options.url, null) === null ? _.get(options.uri, null) : _.get(options.url, null);
 
     // Make sure it is a valid url..
-    if (_.isString(url) && !_.isURL(url)) {
-        url = "https://api.twitch.tv/kraken" + (url.charAt(0) === "/" ? "" : "/") + url;
-        // Force the url in the options to reflect this change..
-        options.url = url;
-    }
-
-    // Callback may be passed through the options..
-    if (_.isUndefined(callback) && _.isFunction(options.callback)) {
-        callback = options.callback;
+    if (!_.isURL(url)) {
+        url = url.charAt(0) === "/" ? "https://api.twitch.tv/kraken" + url : "https://api.twitch.tv/kraken/" + url;
     }
 
     // We are inside a Node application, so we can use the request module..
     if (_.isNode()) {
-        request(_.defaults(options, { url: url, method: "GET", json: true, callback: callback }));
+        request(_.merge(options, { url: url, method: "GET", json: true }), function (err, res, body) {
+            callback(err, res, body);
+        });
     }
     // Inside an extension -> we cannot use jsonp!
     else if (_.isExtension()) {
@@ -105,7 +100,7 @@ var client = function client(opts) {
     this.setMaxListeners(0);
 
     this.opts = _.get(opts, {});
-    this.opts.channels = this.opts.channels || this.opts.channel || [];
+    this.opts.channels = this.opts.channels || [];
     this.opts.connection = this.opts.connection || {};
     this.opts.identity = this.opts.identity || {};
     this.opts.options = this.opts.options || {};
@@ -152,16 +147,6 @@ var client = function client(opts) {
     try {
         logger.setLevel(level);
     } catch (e) {};
-
-    // If a string is passed here, format it..
-    if (_.isString(this.opts.channels)) {
-        // Comma-delimited channels..
-        if (this.opts.channels.indexOf(",") > -1) {
-            this.opts.channels = this.opts.channels.split(",");
-        } else {
-            this.opts.channels = [this.opts.channels];
-        }
-    }
 
     // Format the channel names..
     this.opts.channels.forEach(function (part, index, theArray) {
@@ -639,8 +624,16 @@ client.prototype.handleMessage = function handleMessage(message) {
                     case "USERNOTICE":
                         if (msgid === "resub") {
                             var username = message.tags["display-name"] || message.tags["login"];
+                            var plan = message.tags["msg-param-sub-plan"];
+                            var planName = _.replaceAll(_.get(message.tags["msg-param-sub-plan-name"], null), {
+                                "\\\\s": " ",
+                                "\\\\:": ";",
+                                "\\\\\\\\": "\\",
+                                "\\r": "\r",
+                                "\\n": "\n"
+                            });
                             var months = _.get(~~message.tags["msg-param-months"], null);
-                            var prime = message.tags["system-msg"].includes('Twitch\\sPrime');
+                            var prime = plan.includes("Prime");
                             var userstate = null;
 
                             if (msg) {
@@ -648,8 +641,30 @@ client.prototype.handleMessage = function handleMessage(message) {
                                 userstate['message-type'] = 'resub';
                             }
 
-                            this.emits(["resub", "subanniversary"], [[channel, username, months, msg, userstate, { prime: prime }], [channel, username, months, msg, userstate, { prime: prime }]]);
+                            this.emits(["resub", "subanniversary"], [[channel, username, months, msg, userstate, { prime: prime, plan: plan, planName: planName }], [channel, username, months, msg, userstate, { prime: prime, plan: plan, planName: planName }]]);
                         }
+
+                        // Handle sub
+                        else if (msgid == "sub") {
+                                var username = message.tags["display-name"] || message.tags["login"];
+                                var plan = message.tags["msg-param-sub-plan"];
+                                var planName = _.replaceAll(_.get(message.tags["msg-param-sub-plan-name"], null), {
+                                    "\\\\s": " ",
+                                    "\\\\:": ";",
+                                    "\\\\\\\\": "\\",
+                                    "\\r": "\r",
+                                    "\\n": "\n"
+                                });
+                                var prime = plan.includes("Prime");
+                                var userstate = null;
+
+                                if (msg) {
+                                    userstate = message.tags;
+                                    userstate['message-type'] = 'sub';
+                                }
+
+                                this.emit("subscription", channel, username, { prime: prime, plan: plan, planName: planName }, msg, userstate);
+                            }
                         break;
 
                     // Channel is now hosting another channel or exited host mode..
@@ -909,48 +924,40 @@ client.prototype.handleMessage = function handleMessage(message) {
                             case "PRIVMSG":
                                 // Add username (lowercase) to the tags..
                                 message.tags.username = message.prefix.split("!")[0];
-                                if (message.tags.username === "twitchnotify") {
-                                    // Someone subscribed to a hosted channel. Who cares.
-                                    if (msg.includes("subscribed to")) {
-                                        // Ignore this feature.
-                                    } else if (msg.includes("just subscribed")) {
-                                        this.emit("subscription", channel, msg.split(" ")[0], { prime: msg.includes("Twitch Prime!") });
-                                    }
-                                }
 
                                 // Message from JTV..
-                                else if (message.tags.username === "jtv") {
-                                        // Someone is hosting the channel and the message contains how many viewers..
-                                        if (msg.includes("hosting you for")) {
-                                            var count = _.extractNumber(msg);
+                                if (message.tags.username === "jtv") {
+                                    // Someone is hosting the channel and the message contains how many viewers..
+                                    if (msg.includes("hosting you for")) {
+                                        var count = _.extractNumber(msg);
 
-                                            this.emit("hosted", channel, _.username(msg.split(" ")[0]), count, msg.includes("auto"));
-                                        }
-
-                                        // Some is hosting the channel, but no viewer(s) count provided in the message..
-                                        else if (msg.includes("hosting you")) {
-                                                this.emit("hosted", channel, _.username(msg.split(" ")[0]), 0, msg.includes("auto"));
-                                            }
-                                    } else {
-                                        // Message is an action (/me <message>)..
-                                        if (msg.match(/^\u0001ACTION ([^\u0001]+)\u0001$/)) {
-                                            message.tags["message-type"] = "action";
-                                            this.log.info("[" + channel + "] *<" + message.tags.username + ">: " + msg.match(/^\u0001ACTION ([^\u0001]+)\u0001$/)[1]);
-                                            this.emits(["action", "message"], [[channel, message.tags, msg.match(/^\u0001ACTION ([^\u0001]+)\u0001$/)[1], false], [channel, message.tags, msg.match(/^\u0001ACTION ([^\u0001]+)\u0001$/)[1], false]]);
-                                        } else {
-                                            if (message.tags.hasOwnProperty("bits")) {
-                                                this.emit("cheer", channel, message.tags, msg);
-                                            }
-
-                                            // Message is a regular chat message..
-                                            else {
-                                                    message.tags["message-type"] = "chat";
-                                                    this.log.info("[" + channel + "] <" + message.tags.username + ">: " + msg);
-
-                                                    this.emits(["chat", "message"], [[channel, message.tags, msg, false], [channel, message.tags, msg, false]]);
-                                                }
-                                        }
+                                        this.emit("hosted", channel, _.username(msg.split(" ")[0]), count, msg.includes("auto"));
                                     }
+
+                                    // Some is hosting the channel, but no viewer(s) count provided in the message..
+                                    else if (msg.includes("hosting you")) {
+                                            this.emit("hosted", channel, _.username(msg.split(" ")[0]), 0, msg.includes("auto"));
+                                        }
+                                } else {
+                                    // Message is an action (/me <message>)..
+                                    if (msg.match(/^\u0001ACTION ([^\u0001]+)\u0001$/)) {
+                                        message.tags["message-type"] = "action";
+                                        this.log.info("[" + channel + "] *<" + message.tags.username + ">: " + msg.match(/^\u0001ACTION ([^\u0001]+)\u0001$/)[1]);
+                                        this.emits(["action", "message"], [[channel, message.tags, msg.match(/^\u0001ACTION ([^\u0001]+)\u0001$/)[1], false], [channel, message.tags, msg.match(/^\u0001ACTION ([^\u0001]+)\u0001$/)[1], false]]);
+                                    } else {
+                                        if (message.tags.hasOwnProperty("bits")) {
+                                            this.emit("cheer", channel, message.tags, msg);
+                                        }
+
+                                        // Message is a regular chat message..
+                                        else {
+                                                message.tags["message-type"] = "chat";
+                                                this.log.info("[" + channel + "] <" + message.tags.username + ">: " + msg);
+
+                                                this.emits(["chat", "message"], [[channel, message.tags, msg, false], [channel, message.tags, msg, false]]);
+                                            }
+                                    }
+                                }
                                 break;
 
                             default:
@@ -2769,7 +2776,7 @@ var _typeof = typeof Symbol === "function" && typeof Symbol.iterator === "symbol
 var self = module.exports = {
 	// Return the second value if the first value is undefined..
 	get: function get(obj1, obj2) {
-		return self.isUndefined(obj1) ? obj2 : obj1;
+		return typeof obj1 === "undefined" ? obj2 : obj1;
 	},
 
 	// Value is a boolean..
@@ -2805,16 +2812,6 @@ var self = module.exports = {
 	// Value is null..
 	isNull: function isNull(obj) {
 		return obj === null;
-	},
-
-	// Value is undefined..
-	isUndefined: function isUndefined(obj) {
-		return typeof obj === "undefined";
-	},
-
-	// Value is a function..
-	isFunction: function isFunction(obj) {
-		return Object.prototype.toString.call(obj) === "[object Function]";
 	},
 
 	// Value is a regex..
@@ -2944,24 +2941,6 @@ var self = module.exports = {
 				}
 			} catch (e) {
 				obj1[p] = obj2[p];
-			}
-		}
-		return obj1;
-	},
-
-	// Merge two objects without replacing..
-	defaults: function defaults(obj1, obj2) {
-		for (var p in obj2) {
-			try {
-				if (obj2[p].constructor == Object) {
-					obj1[p] = self.defaults(obj1[p], obj2[p]);
-				} else if (self.isUndefined(obj1[p])) {
-					obj1[p] = obj2[p];
-				}
-			} catch (e) {
-				if (self.isUndefined(obj1[p])) {
-					obj1[p] = obj2[p];
-				}
 			}
 		}
 		return obj1;
@@ -3183,6 +3162,10 @@ process.off = noop;
 process.removeListener = noop;
 process.removeAllListeners = noop;
 process.emit = noop;
+process.prependListener = noop;
+process.prependOnceListener = noop;
+
+process.listeners = function (name) { return [] }
 
 process.binding = function (name) {
     throw new Error('process.binding is not supported');
