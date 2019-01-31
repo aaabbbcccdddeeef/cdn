@@ -1,19 +1,9 @@
-(function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
+(function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
 "use strict";
 
-// Provide support for < Chrome 41 mainly due to CLR Browser..
-String.prototype.includes || (String.prototype.includes = function () {
-    return -1 !== String.prototype.indexOf.apply(this, arguments);
-}), String.prototype.startsWith || (String.prototype.startsWith = function (a, b) {
-    return b = b || 0, this.indexOf(a, b) === b;
-}), Object.setPrototypeOf || (Object.setPrototypeOf = function (obj, proto) {
-    obj.__proto__ = proto;
-    return obj;
-});
-
 module.exports = {
-    client: require("./lib/client"),
-    Client: require("./lib/client")
+	client: require("./lib/client"),
+	Client: require("./lib/client")
 };
 
 },{"./lib/client":3}],2:[function(require,module,exports){
@@ -23,58 +13,58 @@ var request = require("request");
 var _ = require("./utils");
 
 var api = function api(options, callback) {
-    // Set the url to options.uri or options.url..
-    var url = _.get(options.url, null) === null ? _.get(options.uri, null) : _.get(options.url, null);
+  // Set the url to options.uri or options.url..
+  var url = _.get(options.url, null) === null ? _.get(options.uri, null) : _.get(options.url, null);
 
-    // Make sure it is a valid url..
-    if (!_.isURL(url)) {
-        url = url.charAt(0) === "/" ? "https://api.twitch.tv/kraken" + url : "https://api.twitch.tv/kraken/" + url;
-    }
+  // Make sure it is a valid url..
+  if (!_.isURL(url)) {
+    url = url.charAt(0) === "/" ? "https://api.twitch.tv/kraken" + url : "https://api.twitch.tv/kraken/" + url;
+  }
 
-    // We are inside a Node application, so we can use the request module..
-    if (_.isNode()) {
-        request(_.merge(options, { url: url, method: "GET", json: true }), function (err, res, body) {
-            callback(err, res, body);
-        });
-    }
-    // Inside an extension -> we cannot use jsonp!
-    else if (_.isExtension()) {
-            options = _.merge(options, { url: url, method: "GET", headers: {} });
-            // prepare request
-            var xhr = new XMLHttpRequest();
-            xhr.open(options.method, options.url, true);
-            for (var name in options.headers) {
-                xhr.setRequestHeader(name, options.headers[name]);
-            }
-            xhr.responseType = "json";
-            // set request handler
-            xhr.addEventListener("load", function (ev) {
-                if (xhr.readyState == 4) {
-                    if (xhr.status != 200) {
-                        callback(xhr.status, null, null);
-                    } else {
-                        callback(null, null, xhr.response);
-                    }
-                }
-            });
-            // submit
-            xhr.send();
+  // We are inside a Node application, so we can use the request module..
+  if (_.isNode()) {
+    request(_.merge(options, { url: url, method: "GET", json: true }), function (err, res, body) {
+      callback(err, res, body);
+    });
+  }
+  // Inside an extension -> we cannot use jsonp!
+  else if (_.isExtension()) {
+      options = _.merge(options, { url: url, method: "GET", headers: {} });
+      // prepare request
+      var xhr = new XMLHttpRequest();
+      xhr.open(options.method, options.url, true);
+      for (var name in options.headers) {
+        xhr.setRequestHeader(name, options.headers[name]);
+      }
+      xhr.responseType = "json";
+      // set request handler
+      xhr.addEventListener("load", function (ev) {
+        if (xhr.readyState == 4) {
+          if (xhr.status != 200) {
+            callback(xhr.status, null, null);
+          } else {
+            callback(null, null, xhr.response);
+          }
         }
-        // Inside a web application, use jsonp..
-        else {
-                // Callbacks must match the regex [a-zA-Z_$][\w$]*(\.[a-zA-Z_$][\w$]*)*
-                var callbackName = "jsonp_callback_" + Math.round(100000 * Math.random());
-                window[callbackName] = function (data) {
-                    delete window[callbackName];
-                    document.body.removeChild(script);
-                    callback(null, null, data);
-                };
+      });
+      // submit
+      xhr.send();
+    }
+    // Inside a web application, use jsonp..
+    else {
+        // Callbacks must match the regex [a-zA-Z_$][\w$]*(\.[a-zA-Z_$][\w$]*)*
+        var callbackName = "jsonp_callback_" + Math.round(100000 * Math.random());
+        window[callbackName] = function (data) {
+          delete window[callbackName];
+          document.body.removeChild(script);
+          callback(null, null, data);
+        };
 
-                // Inject the script in the document..
-                var script = document.createElement("script");
-                script.src = "" + url + (url.indexOf("?") >= 0 ? "&" : "?") + "callback=" + callbackName;
-                document.body.appendChild(script);
-            }
+        // Inject the script in the document..
+        var script = document.createElement("script");
+        script.src = "" + url + (url.indexOf("?") >= 0 ? "&" : "?") + "callback=" + callbackName;
+        document.body.appendChild(script);
+      }
 };
 
 module.exports = api;
@@ -524,6 +514,8 @@ client.prototype.handleMessage = function handleMessage(message) {
                                 break;
 
                             // Unban command success..
+                            // Unban can also be used to cancel an active timeout.
+                            case "untimeout_success":
                             case "unban_success":
                                 this.log.info("[" + channel + "] " + msg);
                                 this.emits(["notice", "_promiseUnban"], [[channel, msgid, msg], [null]]);
@@ -557,7 +549,7 @@ client.prototype.handleMessage = function handleMessage(message) {
                             case "no_permission":
                             case "msg_banned":
                                 this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseBan", "_promiseClear", "_promiseUnban", "_promiseTimeout", "_promiseMod", "_promiseUnmod", "_promiseCommercial", "_promiseHost", "_promiseUnhost", "_promiseR9kbeta", "_promiseR9kbetaoff", "_promiseSlow", "_promiseSlowoff", "_promiseFollowers", "_promiseFollowersoff", "_promiseSubscribers", "_promiseSubscribersoff", "_promiseEmoteonly", "_promiseEmoteonlyoff"], [[channel, msgid, msg], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid]]);
+                                this.emits(["notice", "_promiseBan", "_promiseClear", "_promiseUnban", "_promiseTimeout", "_promiseMods", "_promiseMod", "_promiseUnmod", "_promiseCommercial", "_promiseHost", "_promiseUnhost", "_promiseR9kbeta", "_promiseR9kbetaoff", "_promiseSlow", "_promiseSlowoff", "_promiseFollowers", "_promiseFollowersoff", "_promiseSubscribers", "_promiseSubscribersoff", "_promiseEmoteonly", "_promiseEmoteonlyoff"], [[channel, msgid, msg], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid]]);
                                 break;
 
                             // Unrecognized command..
@@ -2444,10 +2436,10 @@ function isUndefined(arg) {
 var _ = require('./utils');
 
 var currentLevel = "info";
-var levels = { "trace": 0, "debug": 1, "info": 2, "warn": 3, "error": 4, "fatal": 5 };
+var levels = { "trace": 0, "debug": 1, "info": 2, "warn": 3, "error": 4, "fatal": 5
 
-// Logger implementation..
-function log(level) {
+    // Logger implementation..
+};function log(level) {
     // Return a console message depending on the logging level..
     return function (message) {
         if (levels[level] >= levels[currentLevel]) {
@@ -2596,10 +2588,9 @@ module.exports = {
             prefix: null,
             command: null,
             params: []
-        };
 
-        // Position and nextspace are used by the parser as a reference..
-        var position = 0;
+            // Position and nextspace are used by the parser as a reference..
+        };var position = 0;
         var nextspace = 0;
 
         // The first thing we check for is IRCv3.2 message tags.
