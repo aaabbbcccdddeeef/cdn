@@ -13,63 +13,61 @@ var request = require("request");
 var _ = require("./utils");
 
 var api = function api(options, callback) {
-  // Set the url to options.uri or options.url..
-  var url = _.get(options.url, null) === null ? _.get(options.uri, null) : _.get(options.url, null);
+    // Set the url to options.uri or options.url..
+    var url = _.get(options.url, null) === null ? _.get(options.uri, null) : _.get(options.url, null);
 
-  // Make sure it is a valid url..
-  if (!_.isURL(url)) {
-    url = url.charAt(0) === "/" ? "https://api.twitch.tv/kraken" + url : "https://api.twitch.tv/kraken/" + url;
-  }
-
-  // We are inside a Node application, so we can use the request module..
-  if (_.isNode()) {
-    request(_.merge(options, { url: url, method: "GET", json: true }), function (err, res, body) {
-      callback(err, res, body);
-    });
-  }
-  // Inside an extension -> we cannot use jsonp!
-  else if (_.isExtension()) {
-      options = _.merge(options, { url: url, method: "GET", headers: {} });
-      // prepare request
-      var xhr = new XMLHttpRequest();
-      xhr.open(options.method, options.url, true);
-      for (var name in options.headers) {
-        xhr.setRequestHeader(name, options.headers[name]);
-      }
-      xhr.responseType = "json";
-      // set request handler
-      xhr.addEventListener("load", function (ev) {
-        if (xhr.readyState == 4) {
-          if (xhr.status != 200) {
-            callback(xhr.status, null, null);
-          } else {
-            callback(null, null, xhr.response);
-          }
-        }
-      });
-      // submit
-      xhr.send();
+    // Make sure it is a valid url..
+    if (!_.isURL(url)) {
+        url = "https://api.twitch.tv/kraken" + (url[0] === "/" ? url : "/" + url);
     }
-    // Inside a web application, use jsonp..
-    else {
-        // Callbacks must match the regex [a-zA-Z_$][\w$]*(\.[a-zA-Z_$][\w$]*)*
-        var callbackName = "jsonp_callback_" + Math.round(100000 * Math.random());
-        window[callbackName] = function (data) {
-          delete window[callbackName];
-          document.body.removeChild(script);
-          callback(null, null, data);
-        };
 
-        // Inject the script in the document..
-        var script = document.createElement("script");
-        script.src = "" + url + (url.indexOf("?") >= 0 ? "&" : "?") + "callback=" + callbackName;
-        document.body.appendChild(script);
-      }
+    // We are inside a Node application, so we can use the request module..
+    if (_.isNode()) {
+        request(_.merge({ method: "GET", json: true }, options, { url: url }), callback);
+    }
+    // Inside an extension -> we cannot use jsonp!
+    else if (_.isExtension()) {
+            options = _.merge({ url: url, method: "GET", headers: {} }, options);
+            // prepare request
+            var xhr = new XMLHttpRequest();
+            xhr.open(options.method, options.url, true);
+            for (var name in options.headers) {
+                xhr.setRequestHeader(name, options.headers[name]);
+            }
+            xhr.responseType = "json";
+            // set request handler
+            xhr.addEventListener("load", function (ev) {
+                if (xhr.readyState == 4) {
+                    if (xhr.status != 200) {
+                        callback(xhr.status, null, null);
+                    } else {
+                        callback(null, null, xhr.response);
+                    }
+                }
+            });
+            // submit
+            xhr.send();
+        }
+        // Inside a web application, use jsonp..
+        else {
+                // Callbacks must match the regex [a-zA-Z_$][\w$]*(\.[a-zA-Z_$][\w$]*)*
+                var callbackName = "jsonp_callback_" + Math.round(100000 * Math.random());
+                window[callbackName] = function (data) {
+                    delete window[callbackName];
+                    document.body.removeChild(script);
+                    callback(null, null, data);
+                };
+
+                // Inject the script in the document..
+                var script = document.createElement("script");
+                script.src = "" + url + (url.includes("?") ? "&" : "?") + "callback=" + callbackName;
+                document.body.appendChild(script);
+            }
 };
 
 module.exports = api;
 
-},{"./utils":9,"request":10}],3:[function(require,module,exports){
+},{"./utils":10,"request":11}],3:[function(require,module,exports){
 (function (global){
 "use strict";
 
@@ -79,6 +77,7 @@ var eventEmitter = require("./events").EventEmitter;
 var logger = require("./logger");
 var parse = require("./parser");
 var timer = require("./timer");
+var extraUtils = require("./extra-utils");
 var ws = global.WebSocket || global.MozWebSocket || require("ws");
 var _ = require("./utils");
 
@@ -159,630 +158,735 @@ for (var methodName in commands) {
 client.prototype.handleMessage = function handleMessage(message) {
     var _this = this;
 
-    if (!_.isNull(message)) {
-        var channel = _.channel(_.get(message.params[0], null));
-        var msg = _.get(message.params[1], null);
-        var msgid = _.get(message.tags["msg-id"], null);
+    if (_.isNull(message)) {
+        return;
+    }
 
-        // Parse badges and emotes..
-        message.tags = parse.badges(parse.emotes(message.tags));
+    this.emit("raw_message", JSON.parse(JSON.stringify(message)), message);
 
-        // Transform IRCv3 tags..
-        if (message.tags) {
-            for (var key in message.tags) {
-                if (key !== "emote-sets" && key !== "ban-duration" && key !== "bits") {
-                    if (_.isBoolean(message.tags[key])) {
-                        message.tags[key] = null;
-                    } else if (message.tags[key] === "1") {
-                        message.tags[key] = true;
-                    } else if (message.tags[key] === "0") {
-                        message.tags[key] = false;
-                    }
+    var channel = _.channel(_.get(message.params[0], null));
+    var msg = _.get(message.params[1], null);
+    var msgid = _.get(message.tags["msg-id"], null);
+
+    // Parse badges and emotes..
+    message.tags = parse.badges(parse.emotes(message.tags));
+
+    // Transform IRCv3 tags..
+    if (message.tags) {
+        for (var key in message.tags) {
+            if (key !== "emote-sets" && key !== "ban-duration" && key !== "bits") {
+                if (_.isBoolean(message.tags[key])) {
+                    message.tags[key] = null;
+                } else if (message.tags[key] === "1") {
+                    message.tags[key] = true;
+                } else if (message.tags[key] === "0") {
+                    message.tags[key] = false;
                 }
             }
         }
+    }
 
-        // Messages with no prefix..
-        if (_.isNull(message.prefix)) {
+    // Messages with no prefix..
+    if (_.isNull(message.prefix)) {
+        switch (message.command) {
+            // Received PING from server..
+            case "PING":
+                this.emit("ping");
+                if (!_.isNull(this.ws) && this.ws.readyState !== 2 && this.ws.readyState !== 3) {
+                    this.ws.send("PONG");
+                }
+                break;
+
+            // Received PONG from server, return current latency..
+            case "PONG":
+                var currDate = new Date();
+                this.currentLatency = (currDate.getTime() - this.latency.getTime()) / 1000;
+                this.emits(["pong", "_promisePing"], [[this.currentLatency]]);
+
+                clearTimeout(this.pingTimeout);
+                break;
+
+            default:
+                this.log.warn("Could not parse message with no prefix:\n" + JSON.stringify(message, null, 4));
+                break;
+        }
+    }
+
+    // Messages with "tmi.twitch.tv" as a prefix..
+    else if (message.prefix === "tmi.twitch.tv") {
             switch (message.command) {
-                // Received PING from server..
-                case "PING":
-                    this.emit("ping");
-                    if (!_.isNull(this.ws) && this.ws.readyState !== 2 && this.ws.readyState !== 3) {
-                        this.ws.send("PONG");
+                case "002":
+                case "003":
+                case "004":
+                case "375":
+                case "376":
+                case "CAP":
+                    break;
+
+                // Retrieve username from server..
+                case "001":
+                    this.username = message.params[0];
+                    break;
+
+                // Connected to server..
+                case "372":
+                    this.log.info("Connected to server.");
+                    this.userstate["#tmijs"] = {};
+                    this.emits(["connected", "_promiseConnect"], [[this.server, this.port], [null]]);
+                    this.reconnections = 0;
+                    this.reconnectTimer = this.reconnectInterval;
+
+                    // Set an internal ping timeout check interval..
+                    this.pingLoop = setInterval(function () {
+                        // Make sure the connection is opened before sending the message..
+                        if (!_.isNull(_this.ws) && _this.ws.readyState !== 2 && _this.ws.readyState !== 3) {
+                            _this.ws.send("PING");
+                        }
+                        _this.latency = new Date();
+                        _this.pingTimeout = setTimeout(function () {
+                            if (!_.isNull(_this.ws)) {
+                                _this.wasCloseCalled = false;
+                                _this.log.error("Ping timeout.");
+                                _this.ws.close();
+
+                                clearInterval(_this.pingLoop);
+                                clearTimeout(_this.pingTimeout);
+                            }
+                        }, _.get(_this.opts.connection.timeout, 9999));
+                    }, 60000);
+
+                    // Join all the channels from configuration with a 2 seconds interval..
+                    var joinQueue = new timer.queue(2000);
+                    var joinChannels = _.union(this.opts.channels, this.channels);
+                    this.channels = [];
+
+                    for (var i = 0; i < joinChannels.length; i++) {
+                        var self = this;
+                        joinQueue.add(function (i) {
+                            if (!_.isNull(self.ws) && self.ws.readyState !== 2 && self.ws.readyState !== 3) {
+                                self.ws.send("JOIN " + _.channel(joinChannels[i]));
+                            }
+                        }.bind(this, i));
+                    }
+
+                    joinQueue.run();
+                    break;
+
+                // https://github.com/justintv/Twitch-API/blob/master/chat/capabilities.md#notice
+                case "NOTICE":
+                    var nullArr = [null];
+                    var noticeArr = [channel, msgid, msg];
+                    var msgidArr = [msgid];
+                    var channelTrueArr = [channel, true];
+                    var channelFalseArr = [channel, false];
+                    var noticeAndNull = [noticeArr, nullArr];
+                    var noticeAndMsgid = [noticeArr, msgidArr];
+                    var basicLog = "[" + channel + "] " + msg;
+                    switch (msgid) {
+                        // This room is now in subscribers-only mode.
+                        case "subs_on":
+                            this.log.info("[" + channel + "] This room is now in subscribers-only mode.");
+                            this.emits(["subscriber", "subscribers", "_promiseSubscribers"], [channelTrueArr, channelTrueArr, nullArr]);
+                            break;
+
+                        // This room is no longer in subscribers-only mode.
+                        case "subs_off":
+                            this.log.info("[" + channel + "] This room is no longer in subscribers-only mode.");
+                            this.emits(["subscriber", "subscribers", "_promiseSubscribersoff"], [channelFalseArr, channelFalseArr, nullArr]);
+                            break;
+
+                        // This room is now in emote-only mode.
+                        case "emote_only_on":
+                            this.log.info("[" + channel + "] This room is now in emote-only mode.");
+                            this.emits(["emoteonly", "_promiseEmoteonly"], [channelTrueArr, nullArr]);
+                            break;
+
+                        // This room is no longer in emote-only mode.
+                        case "emote_only_off":
+                            this.log.info("[" + channel + "] This room is no longer in emote-only mode.");
+                            this.emits(["emoteonly", "_promiseEmoteonlyoff"], [channelFalseArr, nullArr]);
+                            break;
+
+                        // Do not handle slow_on/off here, listen to the ROOMSTATE notice instead as it returns the delay.
+                        case "slow_on":
+                        case "slow_off":
+                            break;
+
+                        // Do not handle followers_on/off here, listen to the ROOMSTATE notice instead as it returns the delay.
+                        case "followers_on_zero":
+                        case "followers_on":
+                        case "followers_off":
+                            break;
+
+                        // This room is now in r9k mode.
+                        case "r9k_on":
+                            this.log.info("[" + channel + "] This room is now in r9k mode.");
+                            this.emits(["r9kmode", "r9kbeta", "_promiseR9kbeta"], [channelTrueArr, channelTrueArr, nullArr]);
+                            break;
+
+                        // This room is no longer in r9k mode.
+                        case "r9k_off":
+                            this.log.info("[" + channel + "] This room is no longer in r9k mode.");
+                            this.emits(["r9kmode", "r9kbeta", "_promiseR9kbetaoff"], [channelFalseArr, channelFalseArr, nullArr]);
+                            break;
+
+                        // The moderators of this room are: [..., ...]
+                        case "room_mods":
+                            var mods = msg.split(": ")[1].toLowerCase().split(", ").filter(function (n) {
+                                return n;
+                            });
+
+                            this.emits(["_promiseMods", "mods"], [[null, mods], [channel, mods]]);
+                            break;
+
+                        // There are no moderators for this room.
+                        case "no_mods":
+                            this.emits(["_promiseMods", "mods"], [[null, []], [channel, []]]);
+                            break;
+
+                        // The VIPs of this channel are: [..., ...]
+                        case "vips_success":
+                            if (msg.endsWith(".")) {
+                                msg = msg.slice(0, -1);
+                            }
+                            var vips = msg.split(": ")[1].toLowerCase().split(", ").filter(function (n) {
+                                return n;
+                            });
+
+                            this.emits(["_promiseVips", "vips"], [[null, vips], [channel, vips]]);
+                            break;
+
+                        // There are no VIPs for this room.
+                        case "no_vips":
+                            this.emits(["_promiseVips", "vips"], [[null, []], [channel, []]]);
+                            break;
+
+                        // Ban command failed..
+                        case "already_banned":
+                        case "bad_ban_admin":
+                        case "bad_ban_broadcaster":
+                        case "bad_ban_global_mod":
+                        case "bad_ban_self":
+                        case "bad_ban_staff":
+                        case "usage_ban":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseBan"], noticeAndMsgid);
+                            break;
+
+                        // Ban command success..
+                        case "ban_success":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseBan"], noticeAndNull);
+                            break;
+
+                        // Clear command failed..
+                        case "usage_clear":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseClear"], noticeAndMsgid);
+                            break;
+
+                        // Mods command failed..
+                        case "usage_mods":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseMods"], [noticeArr, [msgid, []]]);
+                            break;
+
+                        // Mod command success..
+                        case "mod_success":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseMod"], noticeAndNull);
+                            break;
+
+                        // VIPs command failed..
+                        case "usage_vips":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseVips"], [noticeArr, [msgid, []]]);
+                            break;
+
+                        // VIP command failed..
+                        case "usage_vip":
+                        case "bad_vip_grantee_banned":
+                        case "bad_vip_grantee_already_vip":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseVip"], [noticeArr, [msgid, []]]);
+                            break;
+
+                        // VIP command success..
+                        case "vip_success":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseVip"], noticeAndNull);
+                            break;
+
+                        // Mod command failed..
+                        case "usage_mod":
+                        case "bad_mod_banned":
+                        case "bad_mod_mod":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseMod"], noticeAndMsgid);
+                            break;
+
+                        // Unmod command success..
+                        case "unmod_success":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseUnmod"], noticeAndNull);
+                            break;
+
+                        // Unvip command success...
+                        case "unvip_success":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseUnvip"], noticeAndNull);
+                            break;
+
+                        // Unmod command failed..
+                        case "usage_unmod":
+                        case "bad_unmod_mod":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseUnmod"], noticeAndMsgid);
+                            break;
+
+                        // Unvip command failed..
+                        case "usage_unvip":
+                        case "bad_unvip_grantee_not_vip":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseUnvip"], noticeAndMsgid);
+                            break;
+
+                        // Color command success..
+                        case "color_changed":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseColor"], noticeAndNull);
+                            break;
+
+                        // Color command failed..
+                        case "usage_color":
+                        case "turbo_only_color":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseColor"], noticeAndMsgid);
+                            break;
+
+                        // Commercial command success..
+                        case "commercial_success":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseCommercial"], noticeAndNull);
+                            break;
+
+                        // Commercial command failed..
+                        case "usage_commercial":
+                        case "bad_commercial_error":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseCommercial"], noticeAndMsgid);
+                            break;
+
+                        // Host command success..
+                        case "hosts_remaining":
+                            this.log.info(basicLog);
+                            var remainingHost = !isNaN(msg[0]) ? parseInt(msg[0]) : 0;
+                            this.emits(["notice", "_promiseHost"], [noticeArr, [null, ~~remainingHost]]);
+                            break;
+
+                        // Host command failed..
+                        case "bad_host_hosting":
+                        case "bad_host_rate_exceeded":
+                        case "bad_host_error":
+                        case "usage_host":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseHost"], [noticeArr, [msgid, null]]);
+                            break;
+
+                        // r9kbeta command failed..
+                        case "already_r9k_on":
+                        case "usage_r9k_on":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseR9kbeta"], noticeAndMsgid);
+                            break;
+
+                        // r9kbetaoff command failed..
+                        case "already_r9k_off":
+                        case "usage_r9k_off":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseR9kbetaoff"], noticeAndMsgid);
+                            break;
+
+                        // Timeout command success..
+                        case "timeout_success":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseTimeout"], noticeAndNull);
+                            break;
+
+                        case "delete_message_success":
+                            this.log.info("[" + channel + " " + msg + "]");
+                            this.emits(["notice", "_promiseDeletemessage"], noticeAndNull);
+
+                        // Subscribersoff command failed..
+                        case "already_subs_off":
+                        case "usage_subs_off":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseSubscribersoff"], noticeAndMsgid);
+                            break;
+
+                        // Subscribers command failed..
+                        case "already_subs_on":
+                        case "usage_subs_on":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseSubscribers"], noticeAndMsgid);
+                            break;
+
+                        // Emoteonlyoff command failed..
+                        case "already_emote_only_off":
+                        case "usage_emote_only_off":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseEmoteonlyoff"], noticeAndMsgid);
+                            break;
+
+                        // Emoteonly command failed..
+                        case "already_emote_only_on":
+                        case "usage_emote_only_on":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseEmoteonly"], noticeAndMsgid);
+                            break;
+
+                        // Slow command failed..
+                        case "usage_slow_on":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseSlow"], noticeAndMsgid);
+                            break;
+
+                        // Slowoff command failed..
+                        case "usage_slow_off":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseSlowoff"], noticeAndMsgid);
+                            break;
+
+                        // Timeout command failed..
+                        case "usage_timeout":
+                        case "bad_timeout_admin":
+                        case "bad_timeout_broadcaster":
+                        case "bad_timeout_duration":
+                        case "bad_timeout_global_mod":
+                        case "bad_timeout_self":
+                        case "bad_timeout_staff":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseTimeout"], noticeAndMsgid);
+                            break;
+
+                        // Unban command success..
+                        // Unban can also be used to cancel an active timeout.
+                        case "untimeout_success":
+                        case "unban_success":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseUnban"], noticeAndNull);
+                            break;
+
+                        // Unban command failed..
+                        case "usage_unban":
+                        case "bad_unban_no_ban":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseUnban"], noticeAndMsgid);
+                            break;
+
+                        // Delete command failed..
+                        case "usage_delete":
+                        case "bad_delete_message_error":
+                        case "bad_delete_message_broadcaster":
+                        case "bad_delete_message_mod":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseDeletemessage"], noticeAndMsgid);
+                            break;
+
+                        // Unhost command failed..
+                        case "usage_unhost":
+                        case "not_hosting":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseUnhost"], noticeAndMsgid);
+                            break;
+
+                        // Whisper command failed..
+                        case "whisper_invalid_login":
+                        case "whisper_invalid_self":
+                        case "whisper_limit_per_min":
+                        case "whisper_limit_per_sec":
+                        case "whisper_restricted_recipient":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseWhisper"], noticeAndMsgid);
+                            break;
+
+                        // Permission error..
+                        case "no_permission":
+                        case "msg_banned":
+                        case "msg_room_not_found":
+                        // Channel is suspended..
+                        case "msg_channel_suspended":
+                        case "tos_ban":
+                            this.log.info(basicLog);
+                            this.emits(["notice", "_promiseBan", "_promiseClear", "_promiseUnban", "_promiseTimeout", "_promiseDeletemessage", "_promiseMods", "_promiseMod", "_promiseUnmod", "_promiseVips", "_promiseVip", "_promiseUnvip", "_promiseCommercial", "_promiseHost", "_promiseUnhost", "_promiseJoin", "_promisePart", "_promiseR9kbeta", "_promiseR9kbetaoff", "_promiseSlow", "_promiseSlowoff", "_promiseFollowers", "_promiseFollowersoff", "_promiseSubscribers", "_promiseSubscribersoff", "_promiseEmoteonly", "_promiseEmoteonlyoff"], noticeAndMsgid);
+                            break;
+
+                        // Unrecognized command..
+                        case "unrecognized_cmd":
+                            this.log.info(basicLog);
+                            this.emit("notice", channel, msgid, msg);
+
+                            if (msg.split(" ").splice(-1)[0] === "/w") {
+                                this.log.warn("You must be connected to a group server to send or receive whispers.");
+                            }
+                            break;
+
+                        // Send the following msg-ids to the notice event listener..
+                        case "cmds_available":
+                        case "host_target_went_offline":
+                        case "msg_censored_broadcaster":
+                        case "msg_duplicate":
+                        case "msg_emoteonly":
+                        case "msg_verified_email":
+                        case "msg_ratelimit":
+                        case "msg_subsonly":
+                        case "msg_timedout":
+                        case "msg_bad_characters":
+                        case "msg_channel_blocked":
+                        case "msg_facebook":
+                        case "msg_followersonly":
+                        case "msg_followersonly_followed":
+                        case "msg_followersonly_zero":
+                        case "msg_rejected":
+                        case "msg_slowmode":
+                        case "msg_suspended":
+                        case "no_help":
+                        case "usage_disconnect":
+                        case "usage_help":
+                        case "usage_me":
+                            this.log.info(basicLog);
+                            this.emit("notice", channel, msgid, msg);
+                            break;
+
+                        // Ignore this because we are already listening to HOSTTARGET..
+                        case "host_on":
+                        case "host_off":
+                            //
+                            break;
+
+                        default:
+                            if (msg.includes("Login unsuccessful") || msg.includes("Login authentication failed")) {
+                                this.wasCloseCalled = false;
+                                this.reconnect = false;
+                                this.reason = msg;
+                                this.log.error(this.reason);
+                                this.ws.close();
+                            } else if (msg.includes("Error logging in") || msg.includes("Improperly formatted auth")) {
+                                this.wasCloseCalled = false;
+                                this.reconnect = false;
+                                this.reason = msg;
+                                this.log.error(this.reason);
+                                this.ws.close();
+                            } else if (msg.includes("Invalid NICK")) {
+                                this.wasCloseCalled = false;
+                                this.reconnect = false;
+                                this.reason = "Invalid NICK.";
+                                this.log.error(this.reason);
+                                this.ws.close();
+                            } else {
+                                this.log.warn("Could not parse NOTICE from tmi.twitch.tv:\n" + JSON.stringify(message, null, 4));
+                            }
+                            break;
                     }
                     break;
 
-                // Received PONG from server, return current latency..
-                case "PONG":
-                    var currDate = new Date();
-                    this.currentLatency = (currDate.getTime() - this.latency.getTime()) / 1000;
-                    this.emits(["pong", "_promisePing"], [[this.currentLatency], [this.currentLatency]]);
+                // Handle subanniversary / resub..
+                case "USERNOTICE":
+                    var username = message.tags["display-name"] || message.tags["login"];
+                    var plan = message.tags["msg-param-sub-plan"] || "";
+                    var planName = _.unescapeIRC(_.get(message.tags["msg-param-sub-plan-name"], "")) || null;
+                    var prime = plan.includes("Prime");
+                    var userstate = message.tags;
+                    var streakMonths = ~~(message.tags["msg-param-streak-months"] || 0);
+                    var recipient = message.tags["msg-param-recipient-display-name"] || message.tags["msg-param-recipient-user-name"];
+                    var giftSubCount = ~~message.tags["msg-param-mass-gift-count"];
+                    var methods = { prime: prime, plan: plan, planName: planName };
+                    userstate["message-type"] = msgid;
 
-                    clearTimeout(this.pingTimeout);
-                    break;
-
-                default:
-                    this.log.warn("Could not parse message with no prefix:\n" + JSON.stringify(message, null, 4));
-                    break;
-            }
-        }
-
-        // Messages with "tmi.twitch.tv" as a prefix..
-        else if (message.prefix === "tmi.twitch.tv") {
-                switch (message.command) {
-                    case "002":
-                    case "003":
-                    case "004":
-                    case "375":
-                    case "376":
-                    case "CAP":
-                        break;
-
-                    // Retrieve username from server..
-                    case "001":
-                        this.username = message.params[0];
-                        break;
-
-                    // Connected to server..
-                    case "372":
-                        this.log.info("Connected to server.");
-                        this.userstate["#tmijs"] = {};
-                        this.emits(["connected", "_promiseConnect"], [[this.server, this.port], [null]]);
-                        this.reconnections = 0;
-                        this.reconnectTimer = this.reconnectInterval;
-
-                        // Set an internal ping timeout check interval..
-                        this.pingLoop = setInterval(function () {
-                            // Make sure the connection is opened before sending the message..
-                            if (!_.isNull(_this.ws) && _this.ws.readyState !== 2 && _this.ws.readyState !== 3) {
-                                _this.ws.send("PING");
-                            }
-                            _this.latency = new Date();
-                            _this.pingTimeout = setTimeout(function () {
-                                if (!_.isNull(_this.ws)) {
-                                    _this.wasCloseCalled = false;
-                                    _this.log.error("Ping timeout.");
-                                    _this.ws.close();
-
-                                    clearInterval(_this.pingLoop);
-                                    clearTimeout(_this.pingTimeout);
-                                }
-                            }, _.get(_this.opts.connection.timeout, 9999));
-                        }, 60000);
-
-                        // Join all the channels from configuration with a 2 seconds interval..
-                        var joinQueue = new timer.queue(2000);
-                        var joinChannels = _.union(this.opts.channels, this.channels);
-                        this.channels = [];
-
-                        for (var i = 0; i < joinChannels.length; i++) {
-                            var self = this;
-                            joinQueue.add(function (i) {
-                                if (!_.isNull(self.ws) && self.ws.readyState !== 2 && self.ws.readyState !== 3) {
-                                    self.ws.send("JOIN " + _.channel(joinChannels[i]));
-                                }
-                            }.bind(this, i));
-                        }
-
-                        joinQueue.run();
-                        break;
-
-                    // https://github.com/justintv/Twitch-API/blob/master/chat/capabilities.md#notice
-                    case "NOTICE":
-                        switch (msgid) {
-                            // This room is now in subscribers-only mode.
-                            case "subs_on":
-                                this.log.info("[" + channel + "] This room is now in subscribers-only mode.");
-                                this.emits(["subscriber", "subscribers", "_promiseSubscribers"], [[channel, true], [channel, true], [null]]);
-                                break;
-
-                            // This room is no longer in subscribers-only mode.
-                            case "subs_off":
-                                this.log.info("[" + channel + "] This room is no longer in subscribers-only mode.");
-                                this.emits(["subscriber", "subscribers", "_promiseSubscribersoff"], [[channel, false], [channel, false], [null]]);
-                                break;
-
-                            // This room is now in emote-only mode.
-                            case "emote_only_on":
-                                this.log.info("[" + channel + "] This room is now in emote-only mode.");
-                                this.emits(["emoteonly", "_promiseEmoteonly"], [[channel, true], [null]]);
-                                break;
-
-                            // This room is no longer in emote-only mode.
-                            case "emote_only_off":
-                                this.log.info("[" + channel + "] This room is no longer in emote-only mode.");
-                                this.emits(["emoteonly", "_promiseEmoteonlyoff"], [[channel, false], [null]]);
-                                break;
-
-                            // Do not handle slow_on/off here, listen to the ROOMSTATE notice instead as it returns the delay.
-                            case "slow_on":
-                            case "slow_off":
-                                break;
-
-                            // Do not handle followers_on/off here, listen to the ROOMSTATE notice instead as it returns the delay.
-                            case "followers_on_zero":
-                            case "followers_on":
-                            case "followers_off":
-                                break;
-
-                            // This room is now in r9k mode.
-                            case "r9k_on":
-                                this.log.info("[" + channel + "] This room is now in r9k mode.");
-                                this.emits(["r9kmode", "r9kbeta", "_promiseR9kbeta"], [[channel, true], [channel, true], [null]]);
-                                break;
-
-                            // This room is no longer in r9k mode.
-                            case "r9k_off":
-                                this.log.info("[" + channel + "] This room is no longer in r9k mode.");
-                                this.emits(["r9kmode", "r9kbeta", "_promiseR9kbetaoff"], [[channel, false], [channel, false], [null]]);
-                                break;
-
-                            // The moderators of this room are [...]
-                            case "room_mods":
-                                var splitted = msg.split(":");
-                                var mods = splitted[1].replace(/,/g, "").split(":").toString().toLowerCase().split(" ");
-
-                                for (var i = mods.length - 1; i >= 0; i--) {
-                                    if (mods[i] === "") {
-                                        mods.splice(i, 1);
-                                    }
-                                }
-
-                                this.emits(["_promiseMods", "mods"], [[null, mods], [channel, mods]]);
-                                break;
-
-                            // There are no moderators for this room.
-                            case "no_mods":
-                                this.emit("_promiseMods", null, []);
-                                break;
-
-                            // Channel is suspended..
-                            case "msg_channel_suspended":
-                                this.emits(["notice", "_promiseJoin"], [[channel, msgid, msg], [msgid]]);
-                                break;
-
-                            // Ban command failed..
-                            case "already_banned":
-                            case "bad_ban_admin":
-                            case "bad_ban_broadcaster":
-                            case "bad_ban_global_mod":
-                            case "bad_ban_self":
-                            case "bad_ban_staff":
-                            case "usage_ban":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseBan"], [[channel, msgid, msg], [msgid]]);
-                                break;
-
-                            // Ban command success..
-                            case "ban_success":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseBan"], [[channel, msgid, msg], [null]]);
-                                break;
-
-                            // Clear command failed..
-                            case "usage_clear":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseClear"], [[channel, msgid, msg], [msgid]]);
-                                break;
-
-                            // Mods command failed..
-                            case "usage_mods":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseMods"], [[channel, msgid, msg], [msgid, []]]);
-                                break;
-
-                            // Mod command success..
-                            case "mod_success":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseMod"], [[channel, msgid, msg], [null]]);
-                                break;
-
-                            // Mod command failed..
-                            case "usage_mod":
-                            case "bad_mod_banned":
-                            case "bad_mod_mod":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseMod"], [[channel, msgid, msg], [msgid]]);
-                                break;
-
-                            // Unmod command success..
-                            case "unmod_success":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseUnmod"], [[channel, msgid, msg], [null]]);
-                                break;
-
-                            // Unmod command failed..
-                            case "usage_unmod":
-                            case "bad_unmod_mod":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseUnmod"], [[channel, msgid, msg], [msgid]]);
-                                break;
-
-                            // Color command success..
-                            case "color_changed":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseColor"], [[channel, msgid, msg], [null]]);
-                                break;
-
-                            // Color command failed..
-                            case "usage_color":
-                            case "turbo_only_color":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseColor"], [[channel, msgid, msg], [msgid]]);
-                                break;
-
-                            // Commercial command success..
-                            case "commercial_success":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseCommercial"], [[channel, msgid, msg], [null]]);
-                                break;
-
-                            // Commercial command failed..
-                            case "usage_commercial":
-                            case "bad_commercial_error":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseCommercial"], [[channel, msgid, msg], [msgid]]);
-                                break;
-
-                            // Host command success..
-                            case "hosts_remaining":
-                                this.log.info("[" + channel + "] " + msg);
-                                var remainingHost = !isNaN(msg.charAt(0)) ? msg.charAt(0) : 0;
-                                this.emits(["notice", "_promiseHost"], [[channel, msgid, msg], [null, ~~remainingHost]]);
-                                break;
-
-                            // Host command failed..
-                            case "bad_host_hosting":
-                            case "bad_host_rate_exceeded":
-                            case "bad_host_error":
-                            case "usage_host":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseHost"], [[channel, msgid, msg], [msgid, null]]);
-                                break;
-
-                            // r9kbeta command failed..
-                            case "already_r9k_on":
-                            case "usage_r9k_on":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseR9kbeta"], [[channel, msgid, msg], [msgid]]);
-                                break;
-
-                            // r9kbetaoff command failed..
-                            case "already_r9k_off":
-                            case "usage_r9k_off":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseR9kbetaoff"], [[channel, msgid, msg], [msgid]]);
-                                break;
-
-                            // Timeout command success..
-                            case "timeout_success":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseTimeout"], [[channel, msgid, msg], [null]]);
-                                break;
-
-                            // Subscribersoff command failed..
-                            case "already_subs_off":
-                            case "usage_subs_off":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseSubscribersoff"], [[channel, msgid, msg], [msgid]]);
-                                break;
-
-                            // Subscribers command failed..
-                            case "already_subs_on":
-                            case "usage_subs_on":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseSubscribers"], [[channel, msgid, msg], [msgid]]);
-                                break;
-
-                            // Emoteonlyoff command failed..
-                            case "already_emote_only_off":
-                            case "usage_emote_only_off":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseEmoteonlyoff"], [[channel, msgid, msg], [msgid]]);
-                                break;
-
-                            // Emoteonly command failed..
-                            case "already_emote_only_on":
-                            case "usage_emote_only_on":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseEmoteonly"], [[channel, msgid, msg], [msgid]]);
-                                break;
-
-                            // Slow command failed..
-                            case "usage_slow_on":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseSlow"], [[channel, msgid, msg], [msgid]]);
-                                break;
-
-                            // Slowoff command failed..
-                            case "usage_slow_off":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseSlowoff"], [[channel, msgid, msg], [msgid]]);
-                                break;
-
-                            // Timeout command failed..
-                            case "usage_timeout":
-                            case "bad_timeout_admin":
-                            case "bad_timeout_broadcaster":
-                            case "bad_timeout_duration":
-                            case "bad_timeout_global_mod":
-                            case "bad_timeout_self":
-                            case "bad_timeout_staff":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseTimeout"], [[channel, msgid, msg], [msgid]]);
-                                break;
-
-                            // Unban command success..
-                            // Unban can also be used to cancel an active timeout.
-                            case "untimeout_success":
-                            case "unban_success":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseUnban"], [[channel, msgid, msg], [null]]);
-                                break;
-
-                            // Unban command failed..
-                            case "usage_unban":
-                            case "bad_unban_no_ban":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseUnban"], [[channel, msgid, msg], [msgid]]);
-                                break;
-
-                            // Unhost command failed..
-                            case "usage_unhost":
-                            case "not_hosting":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseUnhost"], [[channel, msgid, msg], [msgid]]);
-                                break;
-
-                            // Whisper command failed..
-                            case "whisper_invalid_login":
-                            case "whisper_invalid_self":
-                            case "whisper_limit_per_min":
-                            case "whisper_limit_per_sec":
-                            case "whisper_restricted_recipient":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseWhisper"], [[channel, msgid, msg], [msgid]]);
-                                break;
-
-                            // Permission error..
-                            case "no_permission":
-                            case "msg_banned":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emits(["notice", "_promiseBan", "_promiseClear", "_promiseUnban", "_promiseTimeout", "_promiseMods", "_promiseMod", "_promiseUnmod", "_promiseCommercial", "_promiseHost", "_promiseUnhost", "_promiseR9kbeta", "_promiseR9kbetaoff", "_promiseSlow", "_promiseSlowoff", "_promiseFollowers", "_promiseFollowersoff", "_promiseSubscribers", "_promiseSubscribersoff", "_promiseEmoteonly", "_promiseEmoteonlyoff"], [[channel, msgid, msg], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid], [msgid]]);
-                                break;
-
-                            // Unrecognized command..
-                            case "unrecognized_cmd":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emit("notice", channel, msgid, msg);
-
-                                if (msg.split(" ").splice(-1)[0] === "/w") {
-                                    this.log.warn("You must be connected to a group server to send or receive whispers.");
-                                }
-                                break;
-
-                            // Send the following msg-ids to the notice event listener..
-                            case "cmds_available":
-                            case "host_target_went_offline":
-                            case "msg_censored_broadcaster":
-                            case "msg_duplicate":
-                            case "msg_emoteonly":
-                            case "msg_verified_email":
-                            case "msg_ratelimit":
-                            case "msg_subsonly":
-                            case "msg_timedout":
-                            case "no_help":
-                            case "usage_disconnect":
-                            case "usage_help":
-                            case "usage_me":
-                                this.log.info("[" + channel + "] " + msg);
-                                this.emit("notice", channel, msgid, msg);
-                                break;
-
-                            // Ignore this because we are already listening to HOSTTARGET..
-                            case "host_on":
-                            case "host_off":
-                                //
-                                break;
-
-                            default:
-                                if (msg.includes("Login unsuccessful") || msg.includes("Login authentication failed")) {
-                                    this.wasCloseCalled = false;
-                                    this.reconnect = false;
-                                    this.reason = msg;
-                                    this.log.error(this.reason);
-                                    this.ws.close();
-                                } else if (msg.includes("Error logging in") || msg.includes("Improperly formatted auth")) {
-                                    this.wasCloseCalled = false;
-                                    this.reconnect = false;
-                                    this.reason = msg;
-                                    this.log.error(this.reason);
-                                    this.ws.close();
-                                } else if (msg.includes("Invalid NICK")) {
-                                    this.wasCloseCalled = false;
-                                    this.reconnect = false;
-                                    this.reason = "Invalid NICK.";
-                                    this.log.error(this.reason);
-                                    this.ws.close();
-                                } else {
-                                    this.log.warn("Could not parse NOTICE from tmi.twitch.tv:\n" + JSON.stringify(message, null, 4));
-                                }
-                                break;
-                        }
-                        break;
-
-                    // Handle subanniversary / resub..
-                    case "USERNOTICE":
-                        if (msgid === "resub") {
-                            var username = message.tags["display-name"] || message.tags["login"];
-                            var plan = message.tags["msg-param-sub-plan"];
-                            var planName = _.replaceAll(_.get(message.tags["msg-param-sub-plan-name"], null), {
-                                "\\\\s": " ",
-                                "\\\\:": ";",
-                                "\\\\\\\\": "\\",
-                                "\\r": "\r",
-                                "\\n": "\n"
-                            });
-                            var months = _.get(~~message.tags["msg-param-months"], null);
-                            var prime = plan.includes("Prime");
-                            var userstate = null;
-
-                            if (msg) {
-                                userstate = message.tags;
-                                userstate['message-type'] = 'resub';
-                            }
-
-                            this.emits(["resub", "subanniversary"], [[channel, username, months, msg, userstate, { prime: prime, plan: plan, planName: planName }], [channel, username, months, msg, userstate, { prime: prime, plan: plan, planName: planName }]]);
-                        }
+                    switch (msgid) {
+                        // Handle resub
+                        case "resub":
+                            this.emits(["resub", "subanniversary"], [[channel, username, streakMonths, msg, userstate, methods]]);
+                            break;
 
                         // Handle sub
-                        else if (msgid == "sub") {
-                                var username = message.tags["display-name"] || message.tags["login"];
-                                var plan = message.tags["msg-param-sub-plan"];
-                                var planName = _.replaceAll(_.get(message.tags["msg-param-sub-plan-name"], null), {
-                                    "\\\\s": " ",
-                                    "\\\\:": ";",
-                                    "\\\\\\\\": "\\",
-                                    "\\r": "\r",
-                                    "\\n": "\n"
-                                });
-                                var prime = plan.includes("Prime");
-                                var userstate = null;
+                        case "sub":
+                            this.emit("subscription", channel, username, methods, msg, userstate);
+                            break;
 
-                                if (msg) {
-                                    userstate = message.tags;
-                                    userstate['message-type'] = 'sub';
-                                }
+                        // Handle gift sub
+                        case "subgift":
+                            this.emit("subgift", channel, username, streakMonths, recipient, methods, userstate);
+                            break;
 
-                                this.emit("subscription", channel, username, { prime: prime, plan: plan, planName: planName }, msg, userstate);
-                            }
-                        break;
+                        // Handle anonymous gift sub
+                        // Need proof that this event occur
+                        case "anonsubgift":
+                            this.emit("anonsubgift", channel, streakMonths, recipient, methods, userstate);
+                            break;
 
-                    // Channel is now hosting another channel or exited host mode..
-                    case "HOSTTARGET":
-                        // Stopped hosting..
-                        if (msg.split(" ")[0] === "-") {
-                            this.log.info("[" + channel + "] Exited host mode.");
-                            this.emits(["unhost", "_promiseUnhost"], [[channel, ~~msg.split(" ")[1] || 0], [null]]);
+                        // Handle random gift subs
+                        case "submysterygift":
+                            this.emit("submysterygift", channel, username, giftSubCount, methods, userstate);
+                            break;
+
+                        // Handle anonymous random gift subs
+                        // Need proof that this event occur
+                        case "anonsubmysterygift":
+                            this.emit("anonsubmysterygift", channel, giftSubCount, methods, userstate);
+                            break;
+
+                        // Handle user upgrading from a gifted sub
+                        case "giftpaidupgrade":
+                            var sender = message.tags["msg-param-sender-name"] || message.tags["msg-param-sender-login"];
+                            this.emit("giftpaidupgrade", channel, username, sender, userstate);
+                            break;
+
+                        // Handle user upgrading from an anonymous gifted sub
+                        case "anongiftpaidupgrade":
+                            this.emit("anongiftpaidupgrade", channel, username, userstate);
+                            break;
+
+                        // Handle raid
+                        case "raid":
+                            var username = message.tags["msg-param-displayName"] || message.tags["msg-param-login"];
+                            var viewers = message.tags["msg-param-viewerCount"];
+                            this.emit("raided", channel, username, viewers);
+                            break;
+                    }
+
+                    break;
+
+                // Channel is now hosting another channel or exited host mode..
+                case "HOSTTARGET":
+                    var msgSplit = msg.split(" ");
+                    var viewers = ~~msgSplit[1] || 0;
+                    // Stopped hosting..
+                    if (msgSplit[0] === "-") {
+                        this.log.info("[" + channel + "] Exited host mode.");
+                        this.emits(["unhost", "_promiseUnhost"], [[channel, viewers], [null]]);
+                    }
+                    // Now hosting..
+                    else {
+                            this.log.info("[" + channel + "] Now hosting " + msgSplit[0] + " for " + viewers + " viewer(s).");
+                            this.emit("hosting", channel, msgSplit[0], viewers);
                         }
-                        // Now hosting..
-                        else {
-                                var viewers = ~~msg.split(" ")[1] || 0;
+                    break;
 
-                                this.log.info("[" + channel + "] Now hosting " + msg.split(" ")[0] + " for " + viewers + " viewer(s).");
-                                this.emit("hosting", channel, msg.split(" ")[0], viewers);
-                            }
-                        break;
+                // Someone has been timed out or chat has been cleared by a moderator..
+                case "CLEARCHAT":
+                    // User has been banned / timed out by a moderator..
+                    if (message.params.length > 1) {
+                        // Duration returns null if it's a ban, otherwise it's a timeout..
+                        var duration = _.get(message.tags["ban-duration"], null);
 
-                    // Someone has been timed out or chat has been cleared by a moderator..
-                    case "CLEARCHAT":
-                        // User has been banned / timed out by a moderator..
-                        if (message.params.length > 1) {
-                            // Duration returns null if it's a ban, otherwise it's a timeout..
-                            var duration = _.get(message.tags["ban-duration"], null);
-
-                            // Escaping values: http://ircv3.net/specs/core/message-tags-3.2.html#escaping-values
-                            var reason = _.replaceAll(_.get(message.tags["ban-reason"], null), {
-                                "\\\\s": " ",
-                                "\\\\:": ";",
-                                "\\\\\\\\": "\\",
-                                "\\r": "\r",
-                                "\\n": "\n"
-                            });
-
-                            if (_.isNull(duration)) {
-                                this.log.info("[" + channel + "] " + msg + " has been banned. Reason: " + (reason || "n/a"));
-                                this.emit("ban", channel, msg, reason);
-                            } else {
-                                this.log.info("[" + channel + "] " + msg + " has been timed out for " + duration + " seconds. Reason: " + (reason || "n/a"));
-                                this.emit("timeout", channel, msg, reason, ~~duration);
-                            }
+                        if (_.isNull(duration)) {
+                            this.log.info("[" + channel + "] " + msg + " has been banned.");
+                            this.emit("ban", channel, msg, null, message.tags);
+                        } else {
+                            this.log.info("[" + channel + "] " + msg + " has been timed out for " + duration + " seconds.");
+                            this.emit("timeout", channel, msg, null, ~~duration, message.tags);
                         }
-                        // Chat was cleared by a moderator..
-                        else {
-                                this.log.info("[" + channel + "] Chat was cleared by a moderator.");
-                                this.emits(["clearchat", "_promiseClear"], [[channel], [null]]);
-                            }
-                        break;
-
-                    // Received a reconnection request from the server..
-                    case "RECONNECT":
-                        this.log.info("Received RECONNECT request from Twitch..");
-                        this.log.info("Disconnecting and reconnecting in " + Math.round(this.reconnectTimer / 1000) + " seconds..");
-                        this.disconnect();
-                        setTimeout(function () {
-                            _this.connect();
-                        }, this.reconnectTimer);
-                        break;
-
-                    // Wrong cluster..
-                    case "SERVERCHANGE":
-                        //
-                        break;
-
-                    // Received when joining a channel and every time you send a PRIVMSG to a channel.
-                    case "USERSTATE":
-                        message.tags.username = this.username;
-
-                        // Add the client to the moderators of this room..
-                        if (message.tags["user-type"] === "mod") {
-                            if (!this.moderators[this.lastJoined]) {
-                                this.moderators[this.lastJoined] = [];
-                            }
-                            if (this.moderators[this.lastJoined].indexOf(this.username) < 0) {
-                                this.moderators[this.lastJoined].push(this.username);
-                            }
+                    }
+                    // Chat was cleared by a moderator..
+                    else {
+                            this.log.info("[" + channel + "] Chat was cleared by a moderator.");
+                            this.emits(["clearchat", "_promiseClear"], [[channel], [null]]);
                         }
+                    break;
 
-                        // Logged in and username doesn't start with justinfan..
-                        if (!_.isJustinfan(this.getUsername()) && !this.userstate[channel]) {
-                            this.userstate[channel] = message.tags;
-                            this.lastJoined = channel;
-                            this.channels.push(channel);
-                            this.log.info("Joined " + channel);
-                            this.emit("join", channel, _.username(this.getUsername()), true);
+                // Someone's message has been deleted
+                case "CLEARMSG":
+                    if (message.params.length > 1) {
+                        var username = message.tags["login"];
+                        var deletedMessage = msg;
+                        var userstate = message.tags;
+                        userstate["message-type"] = "messagedeleted";
+
+                        this.log.info("[" + channel + "] " + username + "'s message has been deleted.");
+                        this.emit("messagedeleted", channel, username, deletedMessage, userstate);
+                    }
+                    break;
+
+                // Received a reconnection request from the server..
+                case "RECONNECT":
+                    this.log.info("Received RECONNECT request from Twitch..");
+                    this.log.info("Disconnecting and reconnecting in " + Math.round(this.reconnectTimer / 1000) + " seconds..");
+                    this.disconnect();
+                    setTimeout(function () {
+                        _this.connect();
+                    }, this.reconnectTimer);
+                    break;
+
+                // Wrong cluster..
+                case "SERVERCHANGE":
+                    //
+                    break;
+
+                // Received when joining a channel and every time you send a PRIVMSG to a channel.
+                case "USERSTATE":
+                    message.tags.username = this.username;
+
+                    // Add the client to the moderators of this room..
+                    if (message.tags["user-type"] === "mod") {
+                        if (!this.moderators[this.lastJoined]) {
+                            this.moderators[this.lastJoined] = [];
                         }
-
-                        // Emote-sets has changed, update it..
-                        if (message.tags["emote-sets"] !== this.emotes) {
-                            this._updateEmoteset(message.tags["emote-sets"]);
+                        if (!this.moderators[this.lastJoined].includes(this.username)) {
+                            this.moderators[this.lastJoined].push(this.username);
                         }
+                    }
 
+                    // Logged in and username doesn't start with justinfan..
+                    if (!_.isJustinfan(this.getUsername()) && !this.userstate[channel]) {
                         this.userstate[channel] = message.tags;
-                        break;
+                        this.lastJoined = channel;
+                        this.channels.push(channel);
+                        this.log.info("Joined " + channel);
+                        this.emit("join", channel, _.username(this.getUsername()), true);
+                    }
 
-                    // Describe non-channel-specific state informations..
-                    case "GLOBALUSERSTATE":
-                        this.globaluserstate = message.tags;
+                    // Emote-sets has changed, update it..
+                    if (message.tags["emote-sets"] !== this.emotes) {
+                        this._updateEmoteset(message.tags["emote-sets"]);
+                    }
 
-                        // Received emote-sets..
-                        if (typeof message.tags["emote-sets"] !== "undefined") {
-                            this._updateEmoteset(message.tags["emote-sets"]);
-                        }
-                        break;
+                    this.userstate[channel] = message.tags;
+                    break;
 
-                    // Received when joining a channel and every time one of the chat room settings, like slow mode, change.
-                    // The message on join contains all room settings.
-                    case "ROOMSTATE":
-                        // We use this notice to know if we successfully joined a channel..
-                        if (_.channel(this.lastJoined) === _.channel(message.params[0])) {
-                            this.emit("_promiseJoin", null);
-                        }
+                // Describe non-channel-specific state informations..
+                case "GLOBALUSERSTATE":
+                    this.globaluserstate = message.tags;
 
-                        // Provide the channel name in the tags before emitting it..
-                        message.tags.channel = _.channel(message.params[0]);
-                        this.emit("roomstate", _.channel(message.params[0]), message.tags);
+                    // Received emote-sets..
+                    if (typeof message.tags["emote-sets"] !== "undefined") {
+                        this._updateEmoteset(message.tags["emote-sets"]);
+                    }
+                    break;
 
+                // Received when joining a channel and every time one of the chat room settings, like slow mode, change.
+                // The message on join contains all room settings.
+                case "ROOMSTATE":
+                    // We use this notice to know if we successfully joined a channel..
+                    if (_.channel(this.lastJoined) === _.channel(message.params[0])) {
+                        this.emit("_promiseJoin", null);
+                    }
+
+                    // Provide the channel name in the tags before emitting it..
+                    message.tags.channel = _.channel(message.params[0]);
+                    this.emit("roomstate", _.channel(message.params[0]), message.tags);
+
+                    if (!message.tags.hasOwnProperty("subs-only")) {
                         // Handle slow mode here instead of the slow_on/off notice..
                         // This room is now in slow mode. You may send messages every slow_duration seconds.
-                        if (message.tags.hasOwnProperty("slow") && !message.tags.hasOwnProperty("subs-only")) {
-                            if (typeof message.tags.slow === "boolean") {
+                        if (message.tags.hasOwnProperty("slow")) {
+                            if (typeof message.tags.slow === "boolean" && !message.tags.slow) {
                                 this.log.info("[" + channel + "] This room is no longer in slow mode.");
                                 this.emits(["slow", "slowmode", "_promiseSlowoff"], [[channel, false, 0], [channel, false, 0], [null]]);
                             } else {
+                                var minutes = ~~message.tags.slow;
                                 this.log.info("[" + channel + "] This room is now in slow mode.");
-                                this.emits(["slow", "slowmode", "_promiseSlow"], [[channel, true, ~~message.tags.slow], [channel, true, ~~message.tags.slow], [null]]);
+                                this.emits(["slow", "slowmode", "_promiseSlow"], [[channel, true, minutes], [channel, true, minutes], [null]]);
                             }
                         }
 
@@ -793,7 +897,7 @@ client.prototype.handleMessage = function handleMessage(message) {
                         // duration is in minutes (string)
                         // -1 when /followersoff (string)
                         // false when /followers with no duration (boolean)
-                        if (message.tags.hasOwnProperty("followers-only") && !message.tags.hasOwnProperty("subs-only")) {
+                        if (message.tags.hasOwnProperty("followers-only")) {
                             if (message.tags["followers-only"] === "-1") {
                                 this.log.info("[" + channel + "] This room is no longer in followers-only mode.");
                                 this.emits(["followersonly", "followersmode", "_promiseFollowersoff"], [[channel, false, 0], [channel, false, 0], [null]]);
@@ -803,161 +907,167 @@ client.prototype.handleMessage = function handleMessage(message) {
                                 this.emits(["followersonly", "followersmode", "_promiseFollowers"], [[channel, true, minutes], [channel, true, minutes], [null]]);
                             }
                         }
+                    }
+                    break;
+
+                default:
+                    this.log.warn("Could not parse message from tmi.twitch.tv:\n" + JSON.stringify(message, null, 4));
+                    break;
+            }
+        }
+
+        // Messages from jtv..
+        else if (message.prefix === "jtv") {
+                switch (message.command) {
+                    case "MODE":
+                        if (msg === "+o") {
+                            // Add username to the moderators..
+                            if (!this.moderators[channel]) {
+                                this.moderators[channel] = [];
+                            }
+                            if (!this.moderators[channel].includes(message.params[2])) {
+                                this.moderators[channel].push(message.params[2]);
+                            }
+
+                            this.emit("mod", channel, message.params[2]);
+                        } else if (msg === "-o") {
+                            // Remove username from the moderators..
+                            if (!this.moderators[channel]) {
+                                this.moderators[channel] = [];
+                            }
+                            this.moderators[channel].filter(function (value) {
+                                return value != message.params[2];
+                            });
+
+                            this.emit("unmod", channel, message.params[2]);
+                        }
                         break;
 
                     default:
-                        this.log.warn("Could not parse message from tmi.twitch.tv:\n" + JSON.stringify(message, null, 4));
+                        this.log.warn("Could not parse message from jtv:\n" + JSON.stringify(message, null, 4));
                         break;
                 }
             }
 
-            // Messages from jtv..
-            else if (message.prefix === "jtv") {
+            // Anything else..
+            else {
                     switch (message.command) {
-                        case "MODE":
-                            if (msg === "+o") {
-                                // Add username to the moderators..
-                                if (!this.moderators[channel]) {
-                                    this.moderators[channel] = [];
-                                }
-                                if (this.moderators[channel].indexOf(message.params[2]) < 0) {
-                                    this.moderators[channel].push(message.params[2]);
+                        case "353":
+                            this.emit("names", message.params[2], message.params[3].split(" "));
+                            break;
+
+                        case "366":
+                            break;
+
+                        // Someone has joined the channel..
+                        case "JOIN":
+                            var nick = message.prefix.split("!")[0];
+                            // Joined a channel as a justinfan (anonymous) user..
+                            if (_.isJustinfan(this.getUsername()) && this.username === nick) {
+                                this.lastJoined = channel;
+                                this.channels.push(channel);
+                                this.log.info("Joined " + channel);
+                                this.emit("join", channel, nick, true);
+                            }
+
+                            // Someone else joined the channel, just emit the join event..
+                            if (this.username !== nick) {
+                                this.emit("join", channel, nick, false);
+                            }
+                            break;
+
+                        // Someone has left the channel..
+                        case "PART":
+                            var isSelf = false;
+                            var nick = message.prefix.split("!")[0];
+                            // Client a channel..
+                            if (this.username === nick) {
+                                isSelf = true;
+                                if (this.userstate[channel]) {
+                                    delete this.userstate[channel];
                                 }
 
-                                this.emit("mod", channel, message.params[2]);
-                            } else if (msg === "-o") {
-                                // Remove username from the moderators..
-                                if (!this.moderators[channel]) {
-                                    this.moderators[channel] = [];
+                                var index = this.channels.indexOf(channel);
+                                if (index !== -1) {
+                                    this.channels.splice(index, 1);
                                 }
-                                this.moderators[channel].filter(function (value) {
-                                    return value != message.params[2];
-                                });
 
-                                this.emit("unmod", channel, message.params[2]);
+                                var index = this.opts.channels.indexOf(channel);
+                                if (index !== -1) {
+                                    this.opts.channels.splice(index, 1);
+                                }
+
+                                this.log.info("Left " + channel);
+                                this.emit("_promisePart", null);
+                            }
+
+                            // Client or someone else left the channel, emit the part event..
+                            this.emit("part", channel, nick, isSelf);
+                            break;
+
+                        // Received a whisper..
+                        case "WHISPER":
+                            var nick = message.prefix.split("!")[0];
+                            this.log.info("[WHISPER] <" + nick + ">: " + msg);
+
+                            // Update the tags to provide the username..
+                            if (!message.tags.hasOwnProperty("username")) {
+                                message.tags.username = nick;
+                            }
+                            message.tags["message-type"] = "whisper";
+
+                            var from = _.channel(message.tags.username);
+                            // Emit for both, whisper and message..
+                            this.emits(["whisper", "message"], [[from, message.tags, msg, false]]);
+                            break;
+
+                        case "PRIVMSG":
+                            // Add username (lowercase) to the tags..
+                            message.tags.username = message.prefix.split("!")[0];
+
+                            // Message from JTV..
+                            if (message.tags.username === "jtv") {
+                                var name = _.username(msg.split(" ")[0]);
+                                var autohost = msg.includes("auto");
+                                // Someone is hosting the channel and the message contains how many viewers..
+                                if (msg.includes("hosting you for")) {
+                                    var count = _.extractNumber(msg);
+
+                                    this.emit("hosted", channel, name, count, autohost);
+                                }
+
+                                // Some is hosting the channel, but no viewer(s) count provided in the message..
+                                else if (msg.includes("hosting you")) {
+                                        this.emit("hosted", channel, name, 0, autohost);
+                                    }
+                            } else {
+                                // Message is an action (/me <message>)..
+                                var actionMessage = _.actionMessage(msg);
+                                if (actionMessage) {
+                                    message.tags["message-type"] = "action";
+                                    this.log.info("[" + channel + "] *<" + message.tags.username + ">: " + actionMessage[1]);
+                                    this.emits(["action", "message"], [[channel, message.tags, actionMessage[1], false]]);
+                                } else {
+                                    if (message.tags.hasOwnProperty("bits")) {
+                                        this.emit("cheer", channel, message.tags, msg);
+                                    }
+
+                                    // Message is a regular chat message..
+                                    else {
+                                            message.tags["message-type"] = "chat";
+                                            this.log.info("[" + channel + "] <" + message.tags.username + ">: " + msg);
+
+                                            this.emits(["chat", "message"], [[channel, message.tags, msg, false]]);
+                                        }
+                                }
                             }
                             break;
 
                         default:
-                            this.log.warn("Could not parse message from jtv:\n" + JSON.stringify(message, null, 4));
+                            this.log.warn("Could not parse message:\n" + JSON.stringify(message, null, 4));
                             break;
                     }
                 }
-
-                // Anything else..
-                else {
-                        switch (message.command) {
-                            case "353":
-                                this.emit("names", message.params[2], message.params[3].split(" "));
-                                break;
-
-                            case "366":
-                                break;
-
-                            // Someone has joined the channel..
-                            case "JOIN":
-                                // Joined a channel as a justinfan (anonymous) user..
-                                if (_.isJustinfan(this.getUsername()) && this.username === message.prefix.split("!")[0]) {
-                                    this.lastJoined = channel;
-                                    this.channels.push(channel);
-                                    this.log.info("Joined " + channel);
-                                    this.emit("join", channel, message.prefix.split("!")[0], true);
-                                }
-
-                                // Someone else joined the channel, just emit the join event..
-                                if (this.username !== message.prefix.split("!")[0]) {
-                                    this.emit("join", channel, message.prefix.split("!")[0], false);
-                                }
-                                break;
-
-                            // Someone has left the channel..
-                            case "PART":
-                                var isSelf = false;
-                                // Client a channel..
-                                if (this.username === message.prefix.split("!")[0]) {
-                                    isSelf = true;
-                                    if (this.userstate[channel]) {
-                                        delete this.userstate[channel];
-                                    }
-
-                                    var index = this.channels.indexOf(channel);
-                                    if (index !== -1) {
-                                        this.channels.splice(index, 1);
-                                    }
-
-                                    var index = this.opts.channels.indexOf(channel);
-                                    if (index !== -1) {
-                                        this.opts.channels.splice(index, 1);
-                                    }
-
-                                    this.log.info("Left " + channel);
-                                    this.emit("_promisePart", null);
-                                }
-
-                                // Client or someone else left the channel, emit the part event..
-                                this.emit("part", channel, message.prefix.split("!")[0], isSelf);
-                                break;
-
-                            // Received a whisper..
-                            case "WHISPER":
-                                this.log.info("[WHISPER] <" + message.prefix.split("!")[0] + ">: " + msg);
-
-                                // Update the tags to provide the username..
-                                if (!message.tags.hasOwnProperty("username")) {
-                                    message.tags.username = message.prefix.split("!")[0];
-                                }
-                                message.tags["message-type"] = "whisper";
-
-                                var from = _.channel(message.tags.username);
-                                // Emit for both, whisper and message..
-                                this.emits(["whisper", "message"], [[from, message.tags, msg, false], [from, message.tags, msg, false]]);
-                                break;
-
-                            case "PRIVMSG":
-                                // Add username (lowercase) to the tags..
-                                message.tags.username = message.prefix.split("!")[0];
-
-                                // Message from JTV..
-                                if (message.tags.username === "jtv") {
-                                    // Someone is hosting the channel and the message contains how many viewers..
-                                    if (msg.includes("hosting you for")) {
-                                        var count = _.extractNumber(msg);
-
-                                        this.emit("hosted", channel, _.username(msg.split(" ")[0]), count, msg.includes("auto"));
-                                    }
-
-                                    // Some is hosting the channel, but no viewer(s) count provided in the message..
-                                    else if (msg.includes("hosting you")) {
-                                            this.emit("hosted", channel, _.username(msg.split(" ")[0]), 0, msg.includes("auto"));
-                                        }
-                                } else {
-                                    // Message is an action (/me <message>)..
-                                    if (msg.match(/^\u0001ACTION ([^\u0001]+)\u0001$/)) {
-                                        message.tags["message-type"] = "action";
-                                        this.log.info("[" + channel + "] *<" + message.tags.username + ">: " + msg.match(/^\u0001ACTION ([^\u0001]+)\u0001$/)[1]);
-                                        this.emits(["action", "message"], [[channel, message.tags, msg.match(/^\u0001ACTION ([^\u0001]+)\u0001$/)[1], false], [channel, message.tags, msg.match(/^\u0001ACTION ([^\u0001]+)\u0001$/)[1], false]]);
-                                    } else {
-                                        if (message.tags.hasOwnProperty("bits")) {
-                                            this.emit("cheer", channel, message.tags, msg);
-                                        }
-
-                                        // Message is a regular chat message..
-                                        else {
-                                                message.tags["message-type"] = "chat";
-                                                this.log.info("[" + channel + "] <" + message.tags.username + ">: " + msg);
-
-                                                this.emits(["chat", "message"], [[channel, message.tags, msg, false], [channel, message.tags, msg, false]]);
-                                            }
-                                    }
-                                }
-                                break;
-
-                            default:
-                                this.log.warn("Could not parse message:\n" + JSON.stringify(message, null, 4));
-                                break;
-                        }
-                    }
-    }
 };
 
 // Connect to server..
@@ -1053,7 +1163,7 @@ client.prototype._onError = function _onError() {
 
     this.reason = !_.isNull(this.ws) ? "Unable to connect." : "Connection closed.";
 
-    this.emits(["_promiseConnect", "disconnected"], [[this.reason], [this.reason]]);
+    this.emits(["_promiseConnect", "disconnected"], [[this.reason]]);
 
     // Reconnect to server..
     if (this.reconnect && this.reconnections === this.maxReconnectAttempts) {
@@ -1094,7 +1204,7 @@ client.prototype._onClose = function _onClose() {
     }
     // Got disconnected from server..
     else {
-            this.emits(["_promiseConnect", "disconnected"], [[this.reason], [this.reason]]);
+            this.emits(["_promiseConnect", "disconnected"], [[this.reason]]);
 
             // Reconnect to server..
             if (this.reconnect && this.reconnections === this.maxReconnectAttempts) {
@@ -1138,8 +1248,9 @@ client.prototype._sendCommand = function _sendCommand(delay, channel, command, f
         if (!_.isNull(_this6.ws) && _this6.ws.readyState !== 2 && _this6.ws.readyState !== 3) {
             // Executing a command on a channel..
             if (!_.isNull(channel)) {
-                _this6.log.info("[" + _.channel(channel) + "] Executing command: " + command);
-                _this6.ws.send("PRIVMSG " + _.channel(channel) + " :" + command);
+                var chan = _.channel(channel);
+                _this6.log.info("[" + chan + "] Executing command: " + command);
+                _this6.ws.send("PRIVMSG " + chan + " :" + command);
             }
 
             // Executing a raw command..
@@ -1165,8 +1276,9 @@ client.prototype._sendMessage = function _sendMessage(delay, channel, message, f
     return new Promise(function (resolve, reject) {
         // Make sure the socket is opened and not logged in as a justinfan user..
         if (!_.isNull(_this7.ws) && _this7.ws.readyState !== 2 && _this7.ws.readyState !== 3 && !_.isJustinfan(_this7.getUsername())) {
-            if (!_this7.userstate[_.channel(channel)]) {
-                _this7.userstate[_.channel(channel)] = {};
+            var chan = _.channel(channel);
+            if (!_this7.userstate[chan]) {
+                _this7.userstate[chan] = {};
             }
 
             // Split long lines otherwise they will be eaten by the server..
@@ -1179,7 +1291,7 @@ client.prototype._sendMessage = function _sendMessage(delay, channel, message, f
                 }, 350);
             }
 
-            _this7.ws.send("PRIVMSG " + _.channel(channel) + " :" + message);
+            _this7.ws.send("PRIVMSG " + chan + " :" + message);
 
             var emotes = {};
 
@@ -1194,20 +1306,21 @@ client.prototype._sendMessage = function _sendMessage(delay, channel, message, f
             });
 
             // Merge userstate with parsed emotes..
-            var userstate = _.merge(_this7.userstate[_.channel(channel)], parse.emotes({ emotes: parse.transformEmotes(emotes) || null }));
+            var userstate = _.merge(_this7.userstate[chan], parse.emotes({ emotes: parse.transformEmotes(emotes) || null }));
 
             // Message is an action (/me <message>)..
-            if (message.match(/^\u0001ACTION ([^\u0001]+)\u0001$/)) {
+            var actionMessage = _.actionMessage(message);
+            if (actionMessage) {
                 userstate["message-type"] = "action";
-                _this7.log.info("[" + _.channel(channel) + "] *<" + _this7.getUsername() + ">: " + message.match(/^\u0001ACTION ([^\u0001]+)\u0001$/)[1]);
-                _this7.emits(["action", "message"], [[_.channel(channel), userstate, message.match(/^\u0001ACTION ([^\u0001]+)\u0001$/)[1], true], [_.channel(channel), userstate, message.match(/^\u0001ACTION ([^\u0001]+)\u0001$/)[1], true]]);
+                _this7.log.info("[" + chan + "] *<" + _this7.getUsername() + ">: " + actionMessage[1]);
+                _this7.emits(["action", "message"], [[chan, userstate, actionMessage[1], true]]);
             }
 
             // Message is a regular chat message..
             else {
                     userstate["message-type"] = "chat";
-                    _this7.log.info("[" + _.channel(channel) + "] <" + _this7.getUsername() + ">: " + message);
-                    _this7.emits(["chat", "message"], [[_.channel(channel), userstate, message, true], [_.channel(channel), userstate, message, true]]);
+                    _this7.log.info("[" + chan + "] <" + _this7.getUsername() + ">: " + message);
+                    _this7.emits(["chat", "message"], [[chan, userstate, message, true]]);
                 }
             fn(resolve, reject);
         } else {
@@ -1256,13 +1369,11 @@ client.prototype.getChannels = function getChannels() {
 
 // Check if username is a moderator on a channel..
 client.prototype.isMod = function isMod(channel, username) {
-    if (!this.moderators[_.channel(channel)]) {
-        this.moderators[_.channel(channel)] = [];
+    var chan = _.channel(channel);
+    if (!this.moderators[chan]) {
+        this.moderators[chan] = [];
     }
-    if (this.moderators[_.channel(channel)].indexOf(_.username(username)) >= 0) {
-        return true;
-    }
-    return false;
+    return this.moderators[chan].includes(_.username(username));
 };
 
 // Get readyState..
@@ -1292,149 +1403,7 @@ client.prototype.disconnect = function disconnect() {
     });
 };
 
-client.prototype.utils = {
-    levenshtein: function levenshtein(s1, s2, caseSensitive) {
-        var cost_ins = 1;
-        var cost_rep = 1;
-        var cost_del = 1;
-        caseSensitive = _.get(caseSensitive, false);
-
-        if (!caseSensitive) {
-            s1 = s1.toLowerCase();
-            s2 = s2.toLowerCase();
-        }
-
-        if (s1 == s2) {
-            return 0;
-        }
-
-        var l1 = s1.length;
-        var l2 = s2.length;
-
-        if (l1 === 0) {
-            return l2 * cost_ins;
-        }
-        if (l2 === 0) {
-            return l1 * cost_del;
-        }
-
-        var split = false;
-        try {
-            split = !"0"[0];
-        } catch (e) {
-            split = true;
-        }
-        if (split) {
-            s1 = s1.split("");
-            s2 = s2.split("");
-        }
-
-        var p1 = new Array(l2 + 1);
-        var p2 = new Array(l2 + 1);
-
-        var i1, i2, c0, c1, c2, tmp;
-
-        for (i2 = 0; i2 <= l2; i2++) {
-            p1[i2] = i2 * cost_ins;
-        }
-
-        for (i1 = 0; i1 < l1; i1++) {
-            p2[0] = p1[0] + cost_del;
-
-            for (i2 = 0; i2 < l2; i2++) {
-                c0 = p1[i2] + (s1[i1] == s2[i2] ? 0 : cost_rep);
-                c1 = p1[i2 + 1] + cost_del;
-
-                if (c1 < c0) {
-                    c0 = c1;
-                }
-
-                c2 = p2[i2] + cost_ins;
-
-                if (c2 < c0) {
-                    c0 = c2;
-                }
-
-                p2[i2 + 1] = c0;
-            }
-
-            tmp = p1;
-            p1 = p2;
-            p2 = tmp;
-        }
-
-        c0 = p1[l2];
-
-        return c0;
-    },
-    raffle: {
-        init: function init(channel) {
-            if (!this.raffleChannels) {
-                this.raffleChannels = {};
-            }
-            if (!this.raffleChannels[_.channel(channel)]) {
-                this.raffleChannels[_.channel(channel)] = [];
-            }
-        },
-        enter: function enter(channel, username) {
-            this.init(channel);
-            this.raffleChannels[_.channel(channel)].push(username.toLowerCase());
-        },
-        leave: function leave(channel, username) {
-            this.init(channel);
-            var index = this.raffleChannels[_.channel(channel)].indexOf(_.username(username));
-            if (index >= 0) {
-                this.raffleChannels[_.channel(channel)].splice(index, 1);
-                return true;
-            }
-            return false;
-        },
-        pick: function pick(channel) {
-            this.init(channel);
-            var count = this.raffleChannels[_.channel(channel)].length;
-            if (count >= 1) {
-                return this.raffleChannels[_.channel(channel)][Math.floor(Math.random() * count)];
-            }
-            return null;
-        },
-        reset: function reset(channel) {
-            this.init(channel);
-            this.raffleChannels[_.channel(channel)] = [];
-        },
-        count: function count(channel) {
-            this.init(channel);
-            if (this.raffleChannels[_.channel(channel)]) {
-                return this.raffleChannels[_.channel(channel)].length;
-            }
-            return 0;
-        },
-        isParticipating: function isParticipating(channel, username) {
-            this.init(channel);
-            if (this.raffleChannels[_.channel(channel)].indexOf(_.username(username)) >= 0) {
-                return true;
-            }
-            return false;
-        }
-    },
-    symbols: function symbols(line) {
-        var count = 0;
-        for (var i = 0; i < line.length; i++) {
-            var charCode = line.substring(i, i + 1).charCodeAt(0);
-            if (charCode <= 30 || charCode >= 127 || charCode === 65533) {
-                count++;
-            }
-        }
-        return Math.ceil(count / line.length * 100) / 100;
-    },
-    uppercase: function uppercase(line) {
-        var chars = line.length;
-        var u_let = line.match(/[A-Z]/g);
-        if (!_.isNull(u_let)) {
-            return u_let.length / chars;
-        }
-        return 0;
-    }
-};
+client.prototype.utils = extraUtils;
 
 // Expose everything, for browser and Node..
 if (typeof module !== "undefined" && module.exports) {
@@ -1443,10 +1412,11 @@ if (typeof module !== "undefined" && module.exports) {
 if (typeof window !== "undefined") {
     window.tmi = {};
     window.tmi.client = client;
+    window.tmi.Client = client;
 }
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./api":2,"./commands":4,"./events":5,"./logger":6,"./parser":7,"./timer":8,"./utils":9,"ws":10}],4:[function(require,module,exports){
+},{"./api":2,"./commands":4,"./events":5,"./extra-utils":6,"./logger":7,"./parser":8,"./timer":9,"./utils":10,"ws":11}],4:[function(require,module,exports){
 "use strict";
 
 var _ = require("./utils");
@@ -1679,16 +1649,35 @@ module.exports = {
         });
     },
 
+    // Delete a specific message on a channel
+    deletemessage: function deletemessage(channel, messageUUID) {
+        var _this12 = this;
+
+        channel = _.channel(channel);
+
+        // Send the command to the server and race the Promise against a delay..
+        return this._sendCommand(this._getPromiseDelay(), channel, "/delete " + messageUUID, function (resolve, reject) {
+            // Received _promiseDeletemessage event, resolve or reject..
+            _this12.once("_promiseDeletemessage", function (err) {
+                if (!err) {
+                    resolve([channel]);
+                } else {
+                    reject(err);
+                }
+            });
+        });
+    },
+
     // Enable emote-only mode on a channel..
     emoteonly: function emoteonly(channel) {
-        var _this12 = this;
+        var _this13 = this;
 
         channel = _.channel(channel);
 
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/emoteonly", function (resolve, reject) {
             // Received _promiseEmoteonly event, resolve or reject..
-            _this12.once("_promiseEmoteonly", function (err) {
+            _this13.once("_promiseEmoteonly", function (err) {
                 if (!err) {
                     resolve([channel]);
                 } else {
@@ -1700,14 +1689,14 @@ module.exports = {
 
     // Disable emote-only mode on a channel..
     emoteonlyoff: function emoteonlyoff(channel) {
-        var _this13 = this;
+        var _this14 = this;
 
         channel = _.channel(channel);
 
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/emoteonlyoff", function (resolve, reject) {
             // Received _promiseEmoteonlyoff event, resolve or reject..
-            _this13.once("_promiseEmoteonlyoff", function (err) {
+            _this14.once("_promiseEmoteonlyoff", function (err) {
                 if (!err) {
                     resolve([channel]);
                 } else {
@@ -1731,7 +1720,7 @@ module.exports = {
 
     // Host a channel..
     host: function host(channel, target) {
-        var _this14 = this;
+        var _this15 = this;
 
         channel = _.channel(channel);
         target = _.username(target);
@@ -1739,7 +1728,7 @@ module.exports = {
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(2000, channel, "/host " + target, function (resolve, reject) {
             // Received _promiseHost event, resolve or reject..
-            _this14.once("_promiseHost", function (err, remaining) {
+            _this15.once("_promiseHost", function (err, remaining) {
                 if (!err) {
                     resolve([channel, target, ~~remaining]);
                 } else {
@@ -1751,14 +1740,14 @@ module.exports = {
 
     // Join a channel..
     join: function join(channel) {
-        var _this15 = this;
+        var _this16 = this;
 
         channel = _.channel(channel);
 
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), null, "JOIN " + channel, function (resolve, reject) {
             // Received _promiseJoin event, resolve or reject..
-            _this15.once("_promiseJoin", function (err) {
+            _this16.once("_promiseJoin", function (err) {
                 if (!err) {
                     resolve([channel]);
                 } else {
@@ -1770,7 +1759,7 @@ module.exports = {
 
     // Mod username on channel..
     mod: function mod(channel, username) {
-        var _this16 = this;
+        var _this17 = this;
 
         channel = _.channel(channel);
         username = _.username(username);
@@ -1778,7 +1767,7 @@ module.exports = {
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/mod " + username, function (resolve, reject) {
             // Received _promiseMod event, resolve or reject..
-            _this16.once("_promiseMod", function (err) {
+            _this17.once("_promiseMod", function (err) {
                 if (!err) {
                     resolve([channel, username]);
                 } else {
@@ -1790,22 +1779,22 @@ module.exports = {
 
     // Get list of mods on a channel..
     mods: function mods(channel) {
-        var _this17 = this;
+        var _this18 = this;
 
         channel = _.channel(channel);
 
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/mods", function (resolve, reject) {
             // Received _promiseMods event, resolve or reject..
-            _this17.once("_promiseMods", function (err, mods) {
+            _this18.once("_promiseMods", function (err, mods) {
                 if (!err) {
                     // Update the internal list of moderators..
                     mods.forEach(function (username) {
-                        if (!_this17.moderators[channel]) {
-                            _this17.moderators[channel] = [];
+                        if (!_this18.moderators[channel]) {
+                            _this18.moderators[channel] = [];
                         }
-                        if (_this17.moderators[channel].indexOf(username) < 0) {
-                            _this17.moderators[channel].push(username);
+                        if (!_this18.moderators[channel].includes(username)) {
+                            _this18.moderators[channel].push(username);
                         }
                     });
                     resolve(mods);
@@ -1824,25 +1813,25 @@ module.exports = {
 
     // Send a ping to the server..
     ping: function ping() {
-        var _this18 = this;
+        var _this19 = this;
 
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), null, "PING", function (resolve, reject) {
             // Update the internal ping timeout check interval..
-            _this18.latency = new Date();
-            _this18.pingTimeout = setTimeout(function () {
-                if (_this18.ws !== null) {
-                    _this18.wasCloseCalled = false;
-                    _this18.log.error("Ping timeout.");
-                    _this18.ws.close();
+            _this19.latency = new Date();
+            _this19.pingTimeout = setTimeout(function () {
+                if (_this19.ws !== null) {
+                    _this19.wasCloseCalled = false;
+                    _this19.log.error("Ping timeout.");
+                    _this19.ws.close();
 
-                    clearInterval(_this18.pingLoop);
-                    clearTimeout(_this18.pingTimeout);
+                    clearInterval(_this19.pingLoop);
+                    clearTimeout(_this19.pingTimeout);
                 }
-            }, _.get(_this18.opts.connection.timeout, 9999));
+            }, _.get(_this19.opts.connection.timeout, 9999));
 
             // Received _promisePing event, resolve or reject..
-            _this18.once("_promisePing", function (latency) {
+            _this19.once("_promisePing", function (latency) {
                 resolve([parseFloat(latency)]);
             });
         });
@@ -1908,14 +1897,14 @@ module.exports = {
 
     // Enable subscribers mode on a channel..
     subscribers: function subscribers(channel) {
-        var _this19 = this;
+        var _this20 = this;
 
         channel = _.channel(channel);
 
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/subscribers", function (resolve, reject) {
             // Received _promiseSubscribers event, resolve or reject..
-            _this19.once("_promiseSubscribers", function (err) {
+            _this20.once("_promiseSubscribers", function (err) {
                 if (!err) {
                     resolve([channel]);
                 } else {
@@ -1927,14 +1916,14 @@ module.exports = {
 
     // Disable subscribers mode on a channel..
     subscribersoff: function subscribersoff(channel) {
-        var _this20 = this;
+        var _this21 = this;
 
         channel = _.channel(channel);
 
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/subscribersoff", function (resolve, reject) {
             // Received _promiseSubscribersoff event, resolve or reject..
-            _this20.once("_promiseSubscribersoff", function (err) {
+            _this21.once("_promiseSubscribersoff", function (err) {
                 if (!err) {
                     resolve([channel]);
                 } else {
@@ -1946,7 +1935,7 @@ module.exports = {
 
     // Timeout username on channel for X seconds..
     timeout: function timeout(channel, username, seconds, reason) {
-        var _this21 = this;
+        var _this22 = this;
 
         channel = _.channel(channel);
         username = _.username(username);
@@ -1962,7 +1951,7 @@ module.exports = {
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/timeout " + username + " " + seconds + " " + reason, function (resolve, reject) {
             // Received _promiseTimeout event, resolve or reject..
-            _this21.once("_promiseTimeout", function (err) {
+            _this22.once("_promiseTimeout", function (err) {
                 if (!err) {
                     resolve([channel, username, ~~seconds, reason]);
                 } else {
@@ -1974,7 +1963,7 @@ module.exports = {
 
     // Unban username on channel..
     unban: function unban(channel, username) {
-        var _this22 = this;
+        var _this23 = this;
 
         channel = _.channel(channel);
         username = _.username(username);
@@ -1982,7 +1971,7 @@ module.exports = {
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/unban " + username, function (resolve, reject) {
             // Received _promiseUnban event, resolve or reject..
-            _this22.once("_promiseUnban", function (err) {
+            _this23.once("_promiseUnban", function (err) {
                 if (!err) {
                     resolve([channel, username]);
                 } else {
@@ -1994,14 +1983,14 @@ module.exports = {
 
     // End the current hosting..
     unhost: function unhost(channel) {
-        var _this23 = this;
+        var _this24 = this;
 
         channel = _.channel(channel);
 
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(2000, channel, "/unhost", function (resolve, reject) {
             // Received _promiseUnhost event, resolve or reject..
-            _this23.once("_promiseUnhost", function (err) {
+            _this24.once("_promiseUnhost", function (err) {
                 if (!err) {
                     resolve([channel]);
                 } else {
@@ -2013,7 +2002,7 @@ module.exports = {
 
     // Unmod username on channel..
     unmod: function unmod(channel, username) {
-        var _this24 = this;
+        var _this25 = this;
 
         channel = _.channel(channel);
         username = _.username(username);
@@ -2021,7 +2010,7 @@ module.exports = {
         // Send the command to the server and race the Promise against a delay..
         return this._sendCommand(this._getPromiseDelay(), channel, "/unmod " + username, function (resolve, reject) {
             // Received _promiseUnmod event, resolve or reject..
-            _this24.once("_promiseUnmod", function (err) {
+            _this25.once("_promiseUnmod", function (err) {
                 if (!err) {
                     resolve([channel, username]);
                 } else {
@@ -2031,9 +2020,68 @@ module.exports = {
         });
     },
 
+    // Unvip username on channel..
+    unvip: function unvip(channel, username) {
+        var _this26 = this;
+
+        channel = _.channel(channel);
+        username = _.username(username);
+
+        // Send the command to the server and race the Promise against a delay..
+        return this._sendCommand(this._getPromiseDelay(), channel, "/unvip " + username, function (resolve, reject) {
+            // Received _promiseUnvip event, resolve or reject..
+            _this26.once("_promiseUnvip", function (err) {
+                if (!err) {
+                    resolve([channel, username]);
+                } else {
+                    reject(err);
+                }
+            });
+        });
+    },
+
+    // Add username to VIP list on channel..
+    vip: function vip(channel, username) {
+        var _this27 = this;
+
+        channel = _.channel(channel);
+        username = _.username(username);
+
+        // Send the command to the server and race the Promise against a delay..
+        return this._sendCommand(this._getPromiseDelay(), channel, "/vip " + username, function (resolve, reject) {
+            // Received _promiseVip event, resolve or reject..
+            _this27.once("_promiseVip", function (err) {
+                if (!err) {
+                    resolve([channel, username]);
+                } else {
+                    reject(err);
+                }
+            });
+        });
+    },
+
+    // Get list of VIPs on a channel..
+    vips: function vips(channel) {
+        var _this28 = this;
+
+        channel = _.channel(channel);
+
+        // Send the command to the server and race the Promise against a delay..
+        return this._sendCommand(this._getPromiseDelay(), channel, "/vips", function (resolve, reject) {
+            // Received _promiseVips event, resolve or reject..
+            _this28.once("_promiseVips", function (err, vips) {
+                if (!err) {
+                    resolve(vips);
+                } else {
+                    reject(err);
+                }
+            });
+        });
+    },
+
     // Send an whisper message to a user..
     whisper: function whisper(username, message) {
-        var _this25 = this;
+        var _this29 = this;
 
         username = _.username(username);
 
@@ -2049,11 +2097,11 @@ module.exports = {
                 "message-type": "whisper",
                 "message-id": null,
                 "thread-id": null,
-                username: _this25.getUsername()
-            }, _this25.globaluserstate);
+                username: _this29.getUsername()
+            }, _this29.globaluserstate);
 
             // Emit for both, whisper and message..
-            _this25.emits(["whisper", "message"], [[from, userstate, message, true], [from, userstate, message, true]]);
+            _this29.emits(["whisper", "message"], [[from, userstate, message, true], [from, userstate, message, true]]);
 
             // At this time, there is no possible way to detect if a message has been sent has been eaten
             // by the server, so we can only resolve the Promise.
@@ -2062,7 +2110,7 @@ module.exports = {
     }
 };
 
-},{"./utils":9}],5:[function(require,module,exports){
+},{"./utils":10}],5:[function(require,module,exports){
 "use strict";
 
 var _typeof = typeof Symbol === "function" && typeof Symbol.iterator === "symbol" ? function (obj) { return typeof obj; } : function (obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; };
@@ -2129,8 +2177,8 @@ EventEmitter.prototype.setMaxListeners = function (n) {
 // Emit multiple events..
 EventEmitter.prototype.emits = function (types, values) {
     for (var i = 0; i < types.length; i++) {
-        values[i].unshift(types[i]);
-        this.emit.apply(this, values[i]);
+        var val = i < values.length ? values[i] : values[values.length - 1];
+        this.emit.apply(this, [types[i]].concat(val));
     }
 };
 
@@ -2433,7 +2481,153 @@ function isUndefined(arg) {
 },{}],6:[function(require,module,exports){
 "use strict";
 
-var _ = require('./utils');
+var _ = require("./utils");
+
+module.exports = {
+    levenshtein: function levenshtein(s1, s2, caseSensitive) {
+        var cost_ins = 1;
+        var cost_rep = 1;
+        var cost_del = 1;
+        caseSensitive = _.get(caseSensitive, false);
+
+        if (!caseSensitive) {
+            s1 = s1.toLowerCase();
+            s2 = s2.toLowerCase();
+        }
+
+        if (s1 == s2) {
+            return 0;
+        }
+
+        var l1 = s1.length;
+        var l2 = s2.length;
+
+        if (l1 === 0) {
+            return l2 * cost_ins;
+        }
+        if (l2 === 0) {
+            return l1 * cost_del;
+        }
+
+        var split = false;
+        try {
+            split = !"0"[0];
+        } catch (e) {
+            split = true;
+        }
+        if (split) {
+            s1 = s1.split("");
+            s2 = s2.split("");
+        }
+
+        var p1 = new Array(l2 + 1);
+        var p2 = new Array(l2 + 1);
+
+        var i1, i2, c0, c1, c2, tmp;
+
+        for (i2 = 0; i2 <= l2; i2++) {
+            p1[i2] = i2 * cost_ins;
+        }
+
+        for (i1 = 0; i1 < l1; i1++) {
+            p2[0] = p1[0] + cost_del;
+
+            for (i2 = 0; i2 < l2; i2++) {
+                c0 = p1[i2] + (s1[i1] == s2[i2] ? 0 : cost_rep);
+                c1 = p1[i2 + 1] + cost_del;
+
+                if (c1 < c0) {
+                    c0 = c1;
+                }
+
+                c2 = p2[i2] + cost_ins;
+
+                if (c2 < c0) {
+                    c0 = c2;
+                }
+
+                p2[i2 + 1] = c0;
+            }
+
+            tmp = p1;
+            p1 = p2;
+            p2 = tmp;
+        }
+
+        c0 = p1[l2];
+
+        return c0;
+    },
+    raffle: {
+        init: function init(channel) {
+            if (!this.raffleChannels) {
+                this.raffleChannels = {};
+            }
+            if (!this.raffleChannels[_.channel(channel)]) {
+                this.raffleChannels[_.channel(channel)] = [];
+            }
+        },
+        enter: function enter(channel, username) {
+            this.init(channel);
+            this.raffleChannels[_.channel(channel)].push(username.toLowerCase());
+        },
+        leave: function leave(channel, username) {
+            this.init(channel);
+            var index = this.raffleChannels[_.channel(channel)].indexOf(_.username(username));
+            if (index >= 0) {
+                this.raffleChannels[_.channel(channel)].splice(index, 1);
+                return true;
+            }
+            return false;
+        },
+        pick: function pick(channel) {
+            this.init(channel);
+            var count = this.raffleChannels[_.channel(channel)].length;
+            if (count >= 1) {
+                return this.raffleChannels[_.channel(channel)][Math.floor(Math.random() * count)];
+            }
+            return null;
+        },
+        reset: function reset(channel) {
+            this.init(channel);
+            this.raffleChannels[_.channel(channel)] = [];
+        },
+        count: function count(channel) {
+            this.init(channel);
+            if (this.raffleChannels[_.channel(channel)]) {
+                return this.raffleChannels[_.channel(channel)].length;
+            }
+            return 0;
+        },
+        isParticipating: function isParticipating(channel, username) {
+            this.init(channel);
+            return this.raffleChannels[_.channel(channel)].includes(_.username(username));
+        }
+    },
+    symbols: function symbols(line) {
+        var count = 0;
+        for (var i = 0; i < line.length; i++) {
+            var charCode = line.substring(i, i + 1).charCodeAt(0);
+            if (charCode <= 30 || charCode >= 127 || charCode === 65533) {
+                count++;
+            }
+        }
+        return Math.ceil(count / line.length * 100) / 100;
+    },
+    uppercase: function uppercase(line) {
+        var chars = line.length;
+        var u_let = line.match(/[A-Z]/g);
+        if (!_.isNull(u_let)) {
+            return u_let.length / chars;
+        }
+        return 0;
+    }
+};
+
+},{"./utils":10}],7:[function(require,module,exports){
+"use strict";
+
+var _ = require("./utils");
 
 var currentLevel = "info";
 var levels = { "trace": 0, "debug": 1, "info": 2, "warn": 3, "error": 4, "fatal": 5
@@ -2461,7 +2655,7 @@ module.exports = {
     fatal: log("fatal")
 };
 
-},{"./utils":9}],7:[function(require,module,exports){
+},{"./utils":10}],8:[function(require,module,exports){
 "use strict";
 
 /*
@@ -2703,7 +2897,7 @@ module.exports = {
     }
 };
 
-},{"./utils":9}],8:[function(require,module,exports){
+},{"./utils":10}],9:[function(require,module,exports){
 "use strict";
 
 // Initialize the queue with a specific delay..
@@ -2758,231 +2952,234 @@ queue.prototype.clear = function clear() {
 
 exports.queue = queue;
 
-},{}],9:[function(require,module,exports){
+},{}],10:[function(require,module,exports){
 (function (process){
-"use strict";
+'use strict';
 
 var _typeof = typeof Symbol === "function" && typeof Symbol.iterator === "symbol" ? function (obj) { return typeof obj; } : function (obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; };
 
+var actionMessageRegex = /^\u0001ACTION ([^\u0001]+)\u0001$/;
+var justinFanRegex = /^(justinfan)(\d+$)/;
+var unescapeIRCRegex = /\\([sn:r\\])/g;
+var ircEscapedChars = { s: ' ', n: '', ':': ';', r: '' };
 var self = module.exports = {
-	// Return the second value if the first value is undefined..
-	get: function get(obj1, obj2) {
-		return typeof obj1 === "undefined" ? obj2 : obj1;
-	},
+    // Return the second value if the first value is undefined..
+    get: function get(obj1, obj2) {
+        return typeof obj1 === "undefined" ? obj2 : obj1;
+    },
 
-	// Value is a boolean..
-	isBoolean: function isBoolean(obj) {
-		return typeof obj === "boolean";
-	},
+    // Value is a boolean..
+    isBoolean: function isBoolean(obj) {
+        return typeof obj === "boolean";
+    },
 
-	// Value is a finite number..
-	isFinite: function (_isFinite) {
-		function isFinite(_x) {
-			return _isFinite.apply(this, arguments);
-		}
+    // Value is a finite number..
+    isFinite: function (_isFinite) {
+        function isFinite(_x) {
+            return _isFinite.apply(this, arguments);
+        }
 
-		isFinite.toString = function () {
-			return _isFinite.toString();
-		};
+        isFinite.toString = function () {
+            return _isFinite.toString();
+        };
 
-		return isFinite;
-	}(function (int) {
-		return isFinite(int) && !isNaN(parseFloat(int));
-	}),
+        return isFinite;
+    }(function (int) {
+        return isFinite(int) && !isNaN(parseFloat(int));
+    }),
 
-	// Value is an integer..
-	isInteger: function isInteger(int) {
-		return !isNaN(self.toNumber(int, 0));
-	},
+    // Value is an integer..
+    isInteger: function isInteger(int) {
+        return !isNaN(self.toNumber(int, 0));
+    },
 
-	// Username is a justinfan username..
-	isJustinfan: function isJustinfan(username) {
-		return RegExp("^(justinfan)(\\d+$)", "g").test(username);
-	},
+    // Username is a justinfan username..
+    isJustinfan: function isJustinfan(username) {
+        return justinFanRegex.test(username);
+    },
 
-	// Value is null..
-	isNull: function isNull(obj) {
-		return obj === null;
-	},
+    // Value is null..
+    isNull: function isNull(obj) {
+        return obj === null;
+    },
 
-	// Value is a regex..
-	isRegex: function isRegex(str) {
-		return (/[\|\\\^\$\*\+\?\:\#]/.test(str)
-		);
-	},
+    // Value is a regex..
+    isRegex: function isRegex(str) {
+        return (/[\|\\\^\$\*\+\?\:\#]/.test(str)
+        );
+    },
 
-	// Value is a string..
-	isString: function isString(str) {
-		return typeof str === "string";
-	},
+    // Value is a string..
+    isString: function isString(str) {
+        return typeof str === "string";
+    },
 
-	// Value is a valid url..
-	isURL: function isURL(str) {
-		return RegExp("^(?:(?:https?|ftp)://)(?:\\S+(?::\\S*)?@)?(?:(?!(?:10|127)(?:\\.\\d{1,3}){3})(?!(?:169\\.254|192\\.168)(?:\\.\\d{1,3}){2})(?!172\\.(?:1[6-9]|2\\d|3[0-1])(?:\\.\\d{1,3}){2})(?:[1-9]\\d?|1\\d\\d|2[01]\\d|22[0-3])(?:\\.(?:1?\\d{1,2}|2[0-4]\\d|25[0-5])){2}(?:\\.(?:[1-9]\\d?|1\\d\\d|2[0-4]\\d|25[0-4]))|(?:(?:[a-z\\u00a1-\\uffff0-9]-*)*[a-z\\u00a1-\\uffff0-9]+)(?:\\.(?:[a-z\\u00a1-\\uffff0-9]-*)*[a-z\\u00a1-\\uffff0-9]+)*(?:\\.(?:[a-z\\u00a1-\\uffff]{2,}))\\.?)(?::\\d{2,5})?(?:[/?#]\\S*)?$", "i").test(str);
-	},
+    // Value is a valid url..
+    isURL: function isURL(str) {
+        return RegExp('^(?:(?:https?|ftp)://)(?:\\S+(?::\\S*)?@)?(?:(?!(?:10|127)(?:\\.\\d{1,3}){3})(?!(?:169\\.254|192\\.168)(?:\\.\\d{1,3}){2})(?!172\\.(?:1[6-9]|2\\d|3[0-1])(?:\\.\\d{1,3}){2})(?:[1-9]\\d?|1\\d\\d|2[01]\\d|22[0-3])(?:\\.(?:1?\\d{1,2}|2[0-4]\\d|25[0-5])){2}(?:\\.(?:[1-9]\\d?|1\\d\\d|2[0-4]\\d|25[0-4]))|(?:(?:[a-z\\u00a1-\\uffff0-9]-*)*[a-z\\u00a1-\\uffff0-9]+)(?:\\.(?:[a-z\\u00a1-\\uffff0-9]-*)*[a-z\\u00a1-\\uffff0-9]+)*(?:\\.(?:[a-z\\u00a1-\\uffff]{2,}))\\.?)(?::\\d{2,5})?(?:[/?#]\\S*)?$', "i").test(str);
+    },
 
-	// Return a random justinfan username..
-	justinfan: function justinfan() {
-		return "justinfan" + Math.floor(Math.random() * 80000 + 1000);
-	},
+    // Return a random justinfan username..
+    justinfan: function justinfan() {
+        return 'justinfan' + Math.floor(Math.random() * 80000 + 1000);
+    },
 
-	// Return a valid password..
-	password: function password(str) {
-		return str === "SCHMOOPIIE" || "" || null ? "SCHMOOPIIE" : "oauth:" + str.toLowerCase().replace("oauth:", "");
-	},
+    // Return a valid password..
+    password: function password(str) {
+        return ["SCHMOOPIIE", "", null].includes(str) ? "SCHMOOPIIE" : 'oauth:' + str.toLowerCase().replace("oauth:", "");
+    },
 
-	// Race a promise against a delay..
-	promiseDelay: function promiseDelay(time) {
-		return new Promise(function (resolve) {
-			setTimeout(resolve, time);
-		});
-	},
+    // Race a promise against a delay..
+    promiseDelay: function promiseDelay(time) {
+        return new Promise(function (resolve) {
+            setTimeout(resolve, time);
+        });
+    },
 
-	// Replace all occurences of a string using an object..
-	replaceAll: function replaceAll(str, obj) {
-		if (str === null || typeof str === "undefined") {
-			return null;
-		}
-		for (var x in obj) {
-			str = str.replace(new RegExp(x, "g"), obj[x]);
-		}
-		return str;
-	},
+    // Replace all occurences of a string using an object..
+    replaceAll: function replaceAll(str, obj) {
+        if (str === null || typeof str === "undefined") {
+            return null;
+        }
+        for (var x in obj) {
+            str = str.replace(new RegExp(x, "g"), obj[x]);
+        }
+        return str;
+    },
 
-	unescapeHtml: function unescapeHtml(safe) {
-		return safe.replace(/\\&amp\\;/g, "&").replace(/\\&lt\\;/g, "<").replace(/\\&gt\\;/g, ">").replace(/\\&quot\\;/g, "\"").replace(/\\&#039\\;/g, "'");
-	},
+    unescapeHtml: function unescapeHtml(safe) {
+        return safe.replace(/\\&amp\\;/g, "&").replace(/\\&lt\\;/g, "<").replace(/\\&gt\\;/g, ">").replace(/\\&quot\\;/g, "\"").replace(/\\&#039\\;/g, "'");
+    },
 
-	// Add word to a string..
-	addWord: function addWord(line, word) {
-		if (line.length != 0) {
-			line += " ";
-		}
-		return line += word;
-	},
+    // Escaping values: http://ircv3.net/specs/core/message-tags-3.2.html#escaping-values
+    unescapeIRC: function unescapeIRC(msg) {
+        return !msg || !msg.includes('\\') ? msg : msg.replace(unescapeIRCRegex, function (m, p) {
+            return p in ircEscapedChars ? ircEscapedChars[p] : p;
+        });
+    },
 
-	// Return a valid channel name..
-	channel: function channel(str) {
-		var channel = typeof str === "undefined" || str === null ? "" : str;
-		return channel.charAt(0) === "#" ? channel.toLowerCase() : "#" + channel.toLowerCase();
-	},
+    actionMessage: function actionMessage(msg) {
+        return msg.match(actionMessageRegex);
+    },
 
-	// Extract a number from a string..
-	extractNumber: function extractNumber(str) {
-		var parts = str.split(" ");
-		for (var i = 0; i < parts.length; i++) {
-			if (self.isInteger(parts[i])) {
-				return ~~parts[i];
-			}
-		}
-		return 0;
-	},
+    // Add word to a string..
+    addWord: function addWord(line, word) {
+        return line.length ? line + " " + word : line + word;
+    },
 
-	// Format the date..
-	formatDate: function formatDate(date) {
-		var hours = date.getHours();
-		var mins = date.getMinutes();
+    // Return a valid channel name..
+    channel: function channel(str) {
+        var channel = (str ? str : "").toLowerCase();
+        return channel[0] === "#" ? channel : "#" + channel;
+    },
 
-		hours = (hours < 10 ? "0" : "") + hours;
-		mins = (mins < 10 ? "0" : "") + mins;
+    // Extract a number from a string..
+    extractNumber: function extractNumber(str) {
+        var parts = str.split(" ");
+        for (var i = 0; i < parts.length; i++) {
+            if (self.isInteger(parts[i])) {
+                return ~~parts[i];
+            }
+        }
+        return 0;
+    },
 
-		return hours + ":" + mins;
-	},
+    // Format the date..
+    formatDate: function formatDate(date) {
+        var hours = date.getHours();
+        var mins = date.getMinutes();
 
-	// Inherit the prototype methods from one constructor into another..
-	inherits: function inherits(ctor, superCtor) {
-		ctor.super_ = superCtor;
-		var TempCtor = function TempCtor() {};
-		TempCtor.prototype = superCtor.prototype;
-		ctor.prototype = new TempCtor();
-		ctor.prototype.constructor = ctor;
-	},
+        hours = (hours < 10 ? "0" : "") + hours;
+        mins = (mins < 10 ? "0" : "") + mins;
 
-	// Return whether inside a Node application or not..
-	isNode: function isNode() {
-		try {
-			if (module.exports = "object" === (typeof process === "undefined" ? "undefined" : _typeof(process)) && Object.prototype.toString.call(process) === "[object process]") {
-				return true;
-			}
-			return false;
-		} catch (e) {
-			return false;
-		}
-	},
+        return hours + ':' + mins;
+    },
 
-	isExtension: function isExtension() {
-		try {
-			if (window.chrome && chrome.runtime && chrome.runtime.id) {
-				return true;
-			}
-			return false;
-		} catch (e) {
-			return false;
-		}
-	},
+    // Inherit the prototype methods from one constructor into another..
+    inherits: function inherits(ctor, superCtor) {
+        ctor.super_ = superCtor;
+        var TempCtor = function TempCtor() {};
+        TempCtor.prototype = superCtor.prototype;
+        ctor.prototype = new TempCtor();
+        ctor.prototype.constructor = ctor;
+    },
 
-	// Merge two objects..
-	merge: function merge(obj1, obj2) {
-		for (var p in obj2) {
-			try {
-				if (obj2[p].constructor == Object) {
-					obj1[p] = self.merge(obj1[p], obj2[p]);
-				} else {
-					obj1[p] = obj2[p];
-				}
-			} catch (e) {
-				obj1[p] = obj2[p];
-			}
-		}
-		return obj1;
-	},
+    // Return whether inside a Node application or not..
+    isNode: function isNode() {
+        try {
+            if (module.exports = "object" === (typeof process === 'undefined' ? 'undefined' : _typeof(process)) && Object.prototype.toString.call(process) === "[object process]") {
+                return true;
+            }
+            return false;
+        } catch (e) {
+            return false;
+        }
+    },
 
-	// Split a line but don't cut a word in half..
-	splitLine: function splitLine(input, length) {
-		var lastSpace = input.substring(0, length).lastIndexOf(" ");
-		return [input.substring(0, lastSpace), input.substring(lastSpace + 1)];
-	},
+    isExtension: function isExtension() {
+        try {
+            if (window.chrome && chrome.runtime && chrome.runtime.id) {
+                return true;
+            }
+            return false;
+        } catch (e) {
+            return false;
+        }
+    },
 
-	// Parse string to number. Returns NaN if string can't be parsed to number..
-	toNumber: function toNumber(num, precision) {
-		if (num === null) return 0;
-		var factor = Math.pow(10, self.isFinite(precision) ? precision : 0);
-		return Math.round(num * factor) / factor;
-	},
+    // Merge two objects..
+    merge: Object.assign,
 
-	// Merge two arrays..
-	union: function union(arr1, arr2) {
-		var hash = {};
-		var ret = [];
-		for (var i = 0; i < arr1.length; i++) {
-			var e = arr1[i];
-			if (!hash[e]) {
-				hash[e] = true;
-				ret.push(e);
-			}
-		}
-		for (var i = 0; i < arr2.length; i++) {
-			var e = arr2[i];
-			if (!hash[e]) {
-				hash[e] = true;
-				ret.push(e);
-			}
-		}
-		return ret;
-	},
+    // Split a line but try not to cut a word in half..
+    splitLine: function splitLine(input, length) {
+        var lastSpace = input.substring(0, length).lastIndexOf(" ");
+        // No spaces found, split at the very end to avoid a loop..
+        if (lastSpace === -1) {
+            lastSpace = length - 1;
+        }
+        return [input.substring(0, lastSpace), input.substring(lastSpace + 1)];
+    },
 
-	// Return a valid username..
-	username: function username(str) {
-		var username = typeof str === "undefined" || str === null ? "" : str;
-		return username.charAt(0) === "#" ? username.substring(1).toLowerCase() : username.toLowerCase();
-	}
+    // Parse string to number. Returns NaN if string can't be parsed to number..
+    toNumber: function toNumber(num, precision) {
+        if (num === null) return 0;
+        var factor = Math.pow(10, self.isFinite(precision) ? precision : 0);
+        return Math.round(num * factor) / factor;
+    },
+
+    // Merge two arrays..
+    union: function union(arr1, arr2) {
+        var hash = {};
+        var ret = [];
+        for (var i = 0; i < arr1.length; i++) {
+            var e = arr1[i];
+            if (!hash[e]) {
+                hash[e] = true;
+                ret.push(e);
+            }
+        }
+        for (var i = 0; i < arr2.length; i++) {
+            var e = arr2[i];
+            if (!hash[e]) {
+                hash[e] = true;
+                ret.push(e);
+            }
+        }
+        return ret;
+    },
+
+    // Return a valid username..
+    username: function username(str) {
+        var username = (str ? str : "").toLowerCase();
+        return username[0] === "#" ? username.slice(1) : username;
+    }
 };
 
 }).call(this,require('_process'))
-},{"_process":11}],10:[function(require,module,exports){
+},{"_process":12}],11:[function(require,module,exports){
 "use strict";
 
-},{}],11:[function(require,module,exports){
+},{}],12:[function(require,module,exports){
 // shim for using process in browser
 var process = module.exports = {};
 
